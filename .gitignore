@@ -1,0 +1,54 @@
+# Ambientes Python
+.venv/
+.venv-build/
+.verify-venv/
+venv/
+
+# Cache e artefatos Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Builds
+build/
+dist/
+*.spec
+.build-assets/
+
+# Dados locais e arquivos gerados
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.csv
+*.lock
+*.log
+*.tmp
+*.bak
+
+# Editores e sistema operacional
+.vscode/
+.idea/
+*.code-workspace
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Variáveis e segredos locais
+.env
+.env.*
+!.env.example
+
+# Relatórios e pacotes gerados
+*.xlsx
+*.xls
+*.xlsm
+*.exe
+*.msi
+*.zip
