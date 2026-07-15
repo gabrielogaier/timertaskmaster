@@ -60,7 +60,7 @@ class ReportExportTests(unittest.TestCase):
             self.assertEqual(rows[1]["origem_registro"], "MANUAL")
             self.assertEqual(rows[0]["duracao_formatada"], "01:00 h")
 
-    def test_excel_has_management_sheets_charts_and_separates_audit(self):
+    def test_excel_has_dynamic_dashboard_and_complete_records_table(self):
         with tempfile.TemporaryDirectory() as temporary:
             target = Path(temporary) / "relatorio.xlsx"
             export_excel(
@@ -75,47 +75,52 @@ class ReportExportTests(unittest.TestCase):
                 period_label="Janeiro a Junho de 2026",
             )
             workbook = load_workbook(target, data_only=False)
-            self.assertEqual(
-                workbook.sheetnames,
-                ["Resumo", "Usuários", "Projetos", "Registros", "Auditoria"],
-            )
-            self.assertEqual(len(workbook["Resumo"]._charts), 2)
-            self.assertEqual(workbook["Resumo"]["B4"].value, "Janeiro a Junho de 2026")
+            self.assertEqual(workbook.sheetnames, ["Dashboard", "Registros"])
+            self.assertEqual(len(workbook["Dashboard"]._charts), 3)
+            self.assertEqual(workbook["Dashboard"]["B4"].value, "Janeiro a Junho de 2026")
             self.assertEqual(workbook["Registros"].max_row, 3)
-            self.assertEqual(workbook["Auditoria"].max_row, 2)
-            self.assertEqual(workbook["Auditoria"]["K2"].value, "EXCLUÍDO")
-            self.assertEqual(workbook["Auditoria"]["M2"].value, "Registro incorreto")
             self.assertEqual(workbook["Registros"]["K3"].value, "EXCLUÍDO")
+            self.assertEqual(workbook["Registros"]["M3"].value, "Registro incorreto")
             self.assertTrue(workbook["Registros"].column_dimensions["T"].hidden)
-            self.assertTrue(workbook["Registros"].column_dimensions["W"].hidden)
-            self.assertIn("SUBTOTAL", workbook["Resumo"]["A13"].value)
-            self.assertIn("Registros", workbook["Resumo"]["B16"].value)
+            self.assertTrue(workbook["Registros"].column_dimensions["X"].hidden)
+            self.assertEqual(workbook["Registros"].tables["tbRegistros"].ref, "A1:X3")
+            self.assertIn("SUMPRODUCT", workbook["Dashboard"]["A14"].value)
+            self.assertIn("'Registros'!", workbook["Dashboard"]["A14"].value)
+            self.assertEqual(workbook["Dashboard"]["A6"].value, "Todos")
+            self.assertEqual(workbook["Dashboard"]["C6"].value, "Todos")
+            self.assertEqual(workbook["Dashboard"]["E6"].value, "Todos")
+            self.assertEqual(workbook["Dashboard"]["G6"].value, "Todos")
+            self.assertEqual(workbook["Dashboard"]["E9"].value, "Todos")
+            self.assertEqual(len(workbook["Dashboard"].data_validations.dataValidation), 5)
+            self.assertTrue(workbook["Dashboard"].column_dimensions["J"].hidden)
+            self.assertTrue(workbook["Dashboard"].column_dimensions["Y"].hidden)
             self.assertEqual(workbook.calculation.calcMode, "auto")
             self.assertTrue(workbook.calculation.fullCalcOnLoad)
             self.assertTrue(workbook.calculation.forceFullCalc)
 
             # Durações são armazenadas como frações de dia e exibidas em [h]:mm,
             # sem horas decimais. Isso preserva soma, filtros e gráficos.
-            self.assertEqual(workbook["Usuários"]["B2"].value.total_seconds(), 3600)
-            self.assertEqual(workbook["Usuários"]["B2"].number_format, EXCEL_DURATION_FORMAT)
-            self.assertEqual(workbook["Usuários"]["C2"].value, 1)
-            self.assertEqual(workbook["Projetos"]["B2"].value.total_seconds(), 3600)
-            self.assertEqual(workbook["Projetos"]["B2"].number_format, EXCEL_DURATION_FORMAT)
             self.assertEqual(workbook["Registros"]["I2"].value.total_seconds(), 3600)
             self.assertEqual(workbook["Registros"]["I2"].number_format, EXCEL_DURATION_FORMAT)
+            self.assertEqual(workbook["Registros"]["T2"].value.total_seconds(), 3600)
+            self.assertEqual(workbook["Registros"]["U2"].value, 1)
+            self.assertEqual(workbook["Registros"]["V2"].value, 0)
+            self.assertEqual(workbook["Registros"]["W2"].value, 0)
+            self.assertEqual(workbook["Registros"]["T3"].value.total_seconds(), 0)
+            self.assertEqual(workbook["Registros"]["U3"].value, 0)
+            self.assertEqual(workbook["Registros"]["V3"].value, 0)
+            self.assertEqual(workbook["Registros"]["W3"].value, 1)
+            self.assertEqual(workbook["Registros"]["X2"].value, datetime(2026, 7, 13))
             self.assertTrue(workbook["Registros"].column_dimensions["H"].hidden)
-            self.assertEqual(workbook["Resumo"]["A13"].number_format, EXCEL_DURATION_FORMAT)
+            self.assertEqual(workbook["Dashboard"]["A14"].number_format, EXCEL_DURATION_FORMAT)
 
             # Uma tabela do Excel já contém seu próprio AutoFiltro. A planilha
             # não pode declarar outro AutoFiltro sobre o mesmo intervalo, pois
             # o Excel repara e remove a tabela ao abrir o arquivo.
             with zipfile.ZipFile(target) as archive:
-                registros_xml = archive.read("xl/worksheets/sheet4.xml").decode("utf-8")
-                auditoria_xml = archive.read("xl/worksheets/sheet5.xml").decode("utf-8")
+                registros_xml = archive.read("xl/worksheets/sheet2.xml").decode("utf-8")
                 self.assertNotIn("<autoFilter", registros_xml)
-                self.assertNotIn("<autoFilter", auditoria_xml)
                 self.assertIn("<tableParts", registros_xml)
-                self.assertIn("<tableParts", auditoria_xml)
 
 
 if __name__ == "__main__":

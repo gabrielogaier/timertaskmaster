@@ -39,18 +39,17 @@ O dashboard mostra:
 
 O Dashboard possui um único botão **Exportar**. A janela de salvamento permite escolher:
 
-- **Excel completo (`.xlsx`)**: cria as abas Resumo, Usuários, Projetos, Registros e Auditoria, com dois gráficos objetivos de horas por usuário e por projeto.
+- **Excel completo (`.xlsx`)**: cria somente as abas Dashboard e Registros. A tabela de registros leva todos os dados da data ou período escolhido; o Dashboard possui filtros editáveis, indicadores e gráficos dinâmicos.
 - **CSV detalhado (`.csv`)**: gera uma lista única dos registros filtrados, adequada para Power BI, tratamento externo ou importação em outro sistema.
 
-A exportação respeita a data e todos os filtros atuais do Dashboard. Registros excluídos não entram nas horas válidas e aparecem na aba Auditoria do Excel ou com status `EXCLUÍDO` no CSV.
+A exportação sempre respeita a data ou os meses escolhidos. No Excel, os filtros atuais viram a seleção inicial do Dashboard sem remover linhas da tabela Registros; no CSV, somente os registros filtrados são exportados. Registros excluídos não entram nas horas válidas e permanecem identificados com status `EXCLUÍDO`.
 
-No Excel, o Resumo também é dinâmico após a exportação:
+No Excel, o Dashboard é dinâmico após a exportação:
 
-- filtros aplicados na tabela **Registros** recalculam horas, registros, manuais e excluídos;
-- filtros na tabela **Usuários** recalculam os indicadores pelo conjunto visível de usuários;
-- filtros na tabela **Projetos** recalculam os indicadores e o gráfico pelo conjunto visível de projetos;
-- a aba Resumo informa qual tabela está controlando os indicadores;
-- quando mais de uma tabela estiver filtrada, a prioridade é Registros, Usuários e depois Projetos.
+- filtros por usuário, projeto, atividade/tarefa, origem, status e intervalo de datas recalculam horas, registros, manuais e excluídos;
+- os rankings de horas por projeto e atividade/tarefa acompanham o mesmo recorte;
+- o gráfico de horas por dia acompanha os filtros e o intervalo de datas;
+- a aba **Registros** mantém os campos de auditoria e os filtros nativos da tabela do Excel;
 - todas as durações visíveis usam o padrão `HH:MM h`; no Excel, as células são durações reais com formato `[h]:mm`, permitindo somas acima de 24 horas sem horas decimais.
 
 ## Exclusão com auditoria

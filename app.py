@@ -129,13 +129,13 @@ class ExportOptionsDialog(QDialog):
         period_layout.addLayout(month_buttons)
 
         self.apply_filters_check = QCheckBox(
-            "Aplicar também os filtros de projeto, tipo,\n"
-            "origem e status do Dashboard"
+            "Usar os filtros de projeto, tipo, origem e status\n"
+            "como seleção inicial do Dashboard exportado"
         )
         self.apply_filters_check.setChecked(False)
         self.apply_filters_check.setToolTip(
-            "Quando marcado, o relatório por ano e meses também respeita os "
-            "filtros de projeto, tipo, origem e status do Dashboard."
+            "No Excel, a tabela Registros continua completa para o período. "
+            "No CSV, somente as linhas que atendem aos filtros são exportadas."
         )
         period_layout.addWidget(self.apply_filters_check)
         layout.addWidget(self.period_group)
@@ -147,6 +147,14 @@ class ExportOptionsDialog(QDialog):
         self.format_combo.addItem("CSV detalhado (.csv)", "csv")
         format_layout.addRow("Exportar como:", self.format_combo)
         layout.addWidget(format_group)
+
+        format_note = QLabel(
+            "Excel: cria Dashboard + Registros completos para a data ou período; "
+            "os filtros ficam editáveis no próprio arquivo."
+        )
+        format_note.setWordWrap(True)
+        format_note.setStyleSheet("color: #667085;")
+        layout.addWidget(format_note)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok
@@ -813,12 +821,20 @@ class MainWindow(TimerMainWindow):
                 QTreeWidgetItem(["Nenhum usuário monitorado. Adicione uma pasta na aba Usuários monitorados."])
             )
 
-    def _dashboard_export_entries(self) -> list[tuple[str, CsvRecord]]:
+    def _dashboard_export_entries(
+        self,
+        filters: dict[str, str] | None = None,
+    ) -> list[tuple[str, CsvRecord]]:
         entries: list[tuple[str, CsvRecord]] = []
+        selected_filters = filters or self._current_dashboard_filters()
         for user in self.master_db.list_users(active_only=True):
             user_id = int(user["id"])
             display_name = str(user["display_name"])
-            for record in self._filtered_records(self.loaded_records.get(user_id, [])):
+            records = self._filter_records(
+                self.loaded_records.get(user_id, []),
+                selected_filters,
+            )
+            for record in records:
                 entries.append((display_name, record))
         return sorted(entries, key=lambda item: (item[0].casefold(), item[1].start, item[1].record_id))
 
@@ -890,6 +906,12 @@ class MainWindow(TimerMainWindow):
             return
 
         current_filters = self._current_dashboard_filters()
+        all_filters = {
+            "projeto": "Todos",
+            "tipo": "Todos",
+            "origem": "Todos",
+            "status": "Todos",
+        }
         mode = str(options["mode"])
         export_format = str(options["format"])
         report_date = self.date_edit.date().toPython()
@@ -900,26 +922,23 @@ class MainWindow(TimerMainWindow):
             year = int(options["year"])
             months = [int(month) for month in options["months"]]
             apply_filters = bool(options["apply_dashboard_filters"])
-            filters = current_filters if apply_filters else {
-                "projeto": "Todos",
-                "tipo": "Todos",
-                "origem": "Todos",
-                "status": "Todos",
-            }
+            filters = current_filters if apply_filters else all_filters
             filters = dict(filters)
             filters["escopo"] = (
-                "Período selecionado com filtros do Dashboard"
+                "Período selecionado com filtros iniciais do Dashboard"
                 if apply_filters
                 else "Período selecionado — todos os registros"
             )
-            entries, errors = self._period_export_entries(year, months, filters)
+            data_filters = all_filters if export_format == "xlsx" else filters
+            entries, errors = self._period_export_entries(year, months, data_filters)
             period_label = self._period_label(year, months)
             default_base = self._period_filename(year, months)
             report_date = date(year, months[0], 1)
         else:
             filters = dict(current_filters)
-            filters["escopo"] = "Filtros atuais do Dashboard"
-            entries = self._dashboard_export_entries()
+            filters["escopo"] = "Data atual com filtros iniciais do Dashboard"
+            data_filters = all_filters if export_format == "xlsx" else current_filters
+            entries = self._dashboard_export_entries(data_filters)
             default_base = f"TimerTask_Relatorio_{report_date:%Y-%m-%d}"
 
         documents = Path.home() / "Documents"

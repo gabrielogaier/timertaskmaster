@@ -184,7 +184,7 @@ class UiSmokeTests(unittest.TestCase):
             window.force_quit = True
             window.close()
 
-    def test_dashboard_export_button_creates_filtered_excel(self):
+    def test_dashboard_export_creates_complete_excel_with_initial_filters(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             db_path = root / "timertask.db"
@@ -259,9 +259,13 @@ class UiSmokeTests(unittest.TestCase):
             self.assertTrue(target.exists())
             from openpyxl import load_workbook
             workbook = load_workbook(target, read_only=True)
-            self.assertIn("Resumo", workbook.sheetnames)
-            self.assertEqual(workbook["Registros"].max_row, 2)
+            self.assertEqual(workbook.sheetnames, ["Dashboard", "Registros"])
+            # O filtro atual abre selecionado no Dashboard, mas a tabela leva
+            # todos os registros da data para permitir trocar o recorte no Excel.
+            self.assertEqual(workbook["Dashboard"]["C6"].value, "Projeto Exportação")
+            self.assertEqual(workbook["Registros"].max_row, 3)
             self.assertEqual(workbook["Registros"]["C2"].value, "Projeto Exportação")
+            self.assertEqual(workbook["Registros"]["C3"].value, "Outro Projeto")
             workbook.close()
             window.force_quit = True
             window.close()
@@ -320,7 +324,7 @@ class UiSmokeTests(unittest.TestCase):
             from openpyxl import load_workbook
             workbook = load_workbook(target, read_only=True)
             self.assertEqual(workbook["Registros"].max_row, 3)
-            self.assertEqual(workbook["Resumo"]["B4"].value, "Janeiro a Junho de 2026")
+            self.assertEqual(workbook["Dashboard"]["B4"].value, "Janeiro a Junho de 2026")
             workbook.close()
             window.force_quit = True
             window.close()

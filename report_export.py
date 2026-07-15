@@ -1,21 +1,22 @@
 from __future__ import annotations
 
 import csv
-from collections import defaultdict
 from datetime import date, datetime
 from pathlib import Path
 from typing import Iterable, Sequence
 
 try:
     from openpyxl import Workbook
-    from openpyxl.chart import BarChart, Reference
+    from openpyxl.chart import BarChart, LineChart, Reference
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.worksheet.datavalidation import DataValidation
     from openpyxl.worksheet.table import Table, TableStyleInfo
     from openpyxl.utils import get_column_letter
 except ModuleNotFoundError:
     Workbook = None
-    BarChart = Reference = None
+    BarChart = LineChart = Reference = None
     Alignment = Border = Font = PatternFill = Side = None
+    DataValidation = None
     Table = TableStyleInfo = None
     get_column_letter = None
 
@@ -95,11 +96,10 @@ def _record_rows(entries: Iterable[RecordEntry]) -> list[list[object]]:
 
 
 def _excel_record_rows(entries: Iterable[RecordEntry]) -> list[list[object]]:
-    """Return report rows plus numeric helper columns used by SUBTOTAL.
+    """Return report rows plus helper columns used by Dashboard formulas.
 
-    The helper columns remain hidden in Excel.  Because they contain numeric
-    flags, SUBTOTAL can recalculate the management KPIs whenever the user
-    filters the Registros table.
+    The helper columns remain hidden in Excel. Numeric flags and a date-only
+    value keep the management formulas simple and auditable.
     """
     rows: list[list[object]] = []
     for row in _record_rows(entries):
@@ -116,6 +116,7 @@ def _excel_record_rows(entries: Iterable[RecordEntry]) -> list[list[object]]:
                 0 if deleted else 1,
                 1 if manual and not deleted else 0,
                 1 if deleted else 0,
+                row[5].date(),
             ]
         )
     return rows
@@ -204,7 +205,6 @@ def _write_detail_sheet(
     title: str,
     entries: Sequence[RecordEntry],
     table_name: str,
-    deleted_style: bool = False,
 ):
     sheet = workbook.create_sheet(title)
     headers = [
@@ -231,6 +231,7 @@ def _write_detail_sheet(
         "Registros contabilizados",
         "Registros manuais",
         "Registros excluídos",
+        "Data do registro",
     ]
     sheet.append(headers)
     _style_header_row(sheet, 1, 1, len(headers))
@@ -242,7 +243,8 @@ def _write_detail_sheet(
         sheet.cell(row_index, 7).number_format = "dd/mm/yyyy hh:mm"
         sheet.cell(row_index, 9).number_format = EXCEL_DURATION_FORMAT
         sheet.cell(row_index, 20).number_format = EXCEL_DURATION_FORMAT
-        if deleted_style or values[10] == "EXCLUÍDO":
+        sheet.cell(row_index, 24).number_format = "dd/mm/yyyy"
+        if values[10] == "EXCLUÍDO":
             for column in range(1, 20):
                 cell = sheet.cell(row_index, column)
                 cell.fill = PatternFill("solid", fgColor=LIGHT_RED)
@@ -263,15 +265,440 @@ def _write_detail_sheet(
     sheet.column_dimensions["M"].width = 30
     sheet.column_dimensions["S"].width = 48
 
-    # Numeric helper columns power the dynamic KPIs but do not clutter the
-    # exported report. They remain part of the table so filters hide the same
-    # rows and SUBTOTAL reacts immediately.
+    # Helper columns power the dynamic Dashboard but do not clutter the
+    # exported report. They remain part of the table so every calculation has
+    # an auditable source inside Registros.
     # Raw seconds remain available in the file for auditing, but the visible
     # duration is the real Excel time value in column I.
     sheet.column_dimensions["H"].hidden = True
-    for column in ("T", "U", "V", "W"):
+    for column in ("T", "U", "V", "W", "X"):
         sheet.column_dimensions[column].hidden = True
     return sheet
+
+
+def _dashboard_metric_formula(
+    end_row: int,
+    value_column: str,
+    *,
+    extra_column: str | None = None,
+    extra_cell: str | None = None,
+    blank_label: str | None = None,
+) -> str:
+    """Build a formula driven by the editable Dashboard filter cells."""
+
+    def data_range(column: str) -> str:
+        return f"'Registros'!${column}$2:${column}${end_row}"
+
+    user_value = 'IF($A$6="(Sem usuário)","",$A$6)'
+    project_value = 'IF($C$6="(Sem projeto)","",$C$6)'
+    activity_value = 'IF($E$6="(Sem atividade)","",$E$6)'
+    origin_value = 'IF($G$6="(Sem origem)","",$G$6)'
+    factors = [
+        f'IF($A$6="Todos",1,--({data_range("A")}={user_value}))',
+        f'IF($C$6="Todos",1,--({data_range("C")}={project_value}))',
+        f'IF($E$6="Todos",1,--({data_range("D")}={activity_value}))',
+        f'IF($G$6="Todos",1,--({data_range("J")}={origin_value}))',
+        (
+            f'IF($E$9="Todos",1,--({data_range("K")}='
+            'IF($E$9="Ativos","ATIVO","EXCLUÍDO")))'
+        ),
+        f'--({data_range("X")}>=$A$9)',
+        f'--({data_range("X")}<=$C$9)',
+    ]
+    if extra_column and extra_cell:
+        criterion = (
+            f'IF({extra_cell}="{blank_label}","",{extra_cell})'
+            if blank_label
+            else extra_cell
+        )
+        factors.append(f'--({data_range(extra_column)}={criterion})')
+
+    return f'=SUMPRODUCT({data_range(value_column)}*{"*".join(factors)})'
+
+
+def _filter_value(value: str | None, options: Sequence[str]) -> str:
+    return value if value in options else "Todos"
+
+
+def _add_dashboard_validation(
+    sheet,
+    target_cell: str,
+    source_column: str,
+    values: Sequence[str],
+) -> None:
+    for row, value in enumerate(values, start=2):
+        sheet.cell(row=row, column=ord(source_column) - ord("A") + 1, value=value)
+    end_row = len(values) + 1
+    validation = DataValidation(
+        type="list",
+        formula1=f"'Dashboard'!${source_column}$2:${source_column}${end_row}",
+        allow_blank=False,
+    )
+    validation.errorTitle = "Filtro inválido"
+    validation.error = "Escolha um valor da lista."
+    validation.promptTitle = "Filtro do Dashboard"
+    validation.prompt = "Selecione um valor para recalcular os indicadores e gráficos."
+    validation.showErrorMessage = True
+    validation.showInputMessage = True
+    sheet.add_data_validation(validation)
+    validation.add(sheet[target_cell])
+
+
+def _style_dashboard_filter(sheet, label_range: str, input_range: str, label: str, value) -> None:
+    label_cell = label_range.split(":", 1)[0]
+    input_cell = input_range.split(":", 1)[0]
+    sheet.merge_cells(label_range)
+    sheet.merge_cells(input_range)
+    sheet[label_cell] = label
+    sheet[input_cell] = value
+    sheet[label_cell].fill = PatternFill("solid", fgColor=LIGHT_BLUE)
+    sheet[label_cell].font = Font(bold=True, color=NAVY)
+    sheet[label_cell].alignment = Alignment(horizontal="center", vertical="center")
+
+    thin = Side(style="thin", color=BLUE)
+    for row in sheet[input_range]:
+        for cell in row:
+            cell.fill = PatternFill("solid", fgColor=WHITE)
+            cell.border = Border(top=thin, bottom=thin, left=thin, right=thin)
+    sheet[input_cell].font = Font(bold=True, color=TEXT)
+    sheet[input_cell].alignment = Alignment(horizontal="center", vertical="center")
+
+
+def _write_dashboard_sheet(
+    sheet,
+    entries: Sequence[RecordEntry],
+    report_date: date,
+    filters: dict[str, str],
+    generated_at: datetime,
+    period_label: str | None,
+) -> None:
+    records = [record for _user, record in entries]
+    user_values = sorted({user or "(Sem usuário)" for user, _record in entries}, key=str.casefold)
+    project_values = sorted(
+        {record.project or "(Sem projeto)" for record in records},
+        key=str.casefold,
+    )
+    activity_values = sorted(
+        {record.activity_type or "(Sem atividade)" for record in records},
+        key=str.casefold,
+    )
+    origin_values = sorted(
+        {record.origin or "(Sem origem)" for record in records},
+        key=str.casefold,
+    )
+    record_dates = sorted({record.start.date() for record in records})
+    start_date = record_dates[0] if record_dates else report_date
+    end_date = record_dates[-1] if record_dates else report_date
+
+    sheet.sheet_view.showGridLines = False
+    sheet.sheet_view.zoomScale = 85
+    sheet.merge_cells("A1:H2")
+    sheet["A1"] = f"{APP_TITLE} — Dashboard de horas"
+    _style_title(sheet["A1"])
+    sheet.row_dimensions[1].height = 28
+    sheet.row_dimensions[2].height = 12
+
+    sheet["A4"] = "Período exportado"
+    sheet["A4"].font = Font(bold=True, color=NAVY)
+    sheet.merge_cells("B4:D4")
+    sheet["B4"] = period_label or report_date
+    if not period_label:
+        sheet["B4"].number_format = "dd/mm/yyyy"
+    sheet["E4"] = "Gerado em"
+    sheet["E4"].font = Font(bold=True, color=NAVY)
+    sheet.merge_cells("F4:H4")
+    sheet["F4"] = generated_at
+    sheet["F4"].number_format = "dd/mm/yyyy hh:mm"
+
+    user_options = ["Todos", *user_values]
+    project_options = ["Todos", *project_values]
+    activity_options = ["Todos", *activity_values]
+    origin_options = ["Todos", *origin_values]
+    status_options = ["Todos", "Ativos", "Excluídos"]
+
+    _style_dashboard_filter(sheet, "A5:B5", "A6:B6", "Usuário", "Todos")
+    _style_dashboard_filter(
+        sheet,
+        "C5:D5",
+        "C6:D6",
+        "Projeto",
+        _filter_value(filters.get("projeto"), project_options),
+    )
+    _style_dashboard_filter(
+        sheet,
+        "E5:F5",
+        "E6:F6",
+        "Atividade / tarefa",
+        _filter_value(filters.get("tipo"), activity_options),
+    )
+    _style_dashboard_filter(
+        sheet,
+        "G5:H5",
+        "G6:H6",
+        "Origem",
+        _filter_value(filters.get("origem"), origin_options),
+    )
+    _style_dashboard_filter(sheet, "A8:B8", "A9:B9", "Data inicial", start_date)
+    _style_dashboard_filter(sheet, "C8:D8", "C9:D9", "Data final", end_date)
+    _style_dashboard_filter(
+        sheet,
+        "E8:F8",
+        "E9:F9",
+        "Status",
+        _filter_value(filters.get("status"), status_options),
+    )
+    _style_dashboard_filter(sheet, "G8:H8", "G9:H9", "Fonte dos dados", "Registros")
+    sheet["A9"].number_format = "dd/mm/yyyy"
+    sheet["C9"].number_format = "dd/mm/yyyy"
+    sheet["G9"].font = Font(bold=True, color=BLUE)
+
+    _add_dashboard_validation(sheet, "A6", "R", user_options)
+    _add_dashboard_validation(sheet, "C6", "S", project_options)
+    _add_dashboard_validation(sheet, "E6", "T", activity_options)
+    _add_dashboard_validation(sheet, "G6", "U", origin_options)
+    _add_dashboard_validation(sheet, "E9", "V", status_options)
+
+    sheet.merge_cells("A11:H11")
+    sheet["A11"] = (
+        "Altere os filtros acima: indicadores e gráficos recalculam usando a tabela completa da aba Registros."
+    )
+    sheet["A11"].font = Font(color=MUTED, italic=True, size=10)
+    sheet["A11"].alignment = Alignment(horizontal="center", vertical="center")
+
+    card_specs = [
+        (1, "Horas contabilizadas", "T", EXCEL_DURATION_FORMAT),
+        (3, "Registros ativos", "U", "0"),
+        (5, "Registros manuais", "V", "0"),
+        (7, "Registros excluídos", "W", "0"),
+    ]
+    end_row = max(2, len(entries) + 1)
+    border_side = Side(style="thin", color=BORDER)
+    for column, label, metric_column, number_format in card_specs:
+        sheet.merge_cells(
+            start_row=13,
+            start_column=column,
+            end_row=13,
+            end_column=column + 1,
+        )
+        sheet.merge_cells(
+            start_row=14,
+            start_column=column,
+            end_row=15,
+            end_column=column + 1,
+        )
+        label_cell = sheet.cell(row=13, column=column, value=label)
+        value_cell = sheet.cell(
+            row=14,
+            column=column,
+            value=_dashboard_metric_formula(end_row, metric_column),
+        )
+        label_cell.fill = PatternFill("solid", fgColor=LIGHT_BLUE)
+        label_cell.font = Font(bold=True, color=NAVY)
+        label_cell.alignment = Alignment(horizontal="center", vertical="center")
+        value_cell.fill = PatternFill("solid", fgColor=WHITE)
+        value_cell.font = Font(bold=True, color=TEXT, size=18)
+        value_cell.alignment = Alignment(horizontal="center", vertical="center")
+        value_cell.number_format = number_format
+        for row in sheet.iter_rows(min_row=13, max_row=15, min_col=column, max_col=column + 1):
+            for cell in row:
+                cell.border = Border(
+                    top=border_side,
+                    bottom=border_side,
+                    left=border_side,
+                    right=border_side,
+                )
+
+    # Formula-backed helper lists feed the visible rankings and charts. They
+    # stay on Dashboard so the workbook has only the two user-facing sheets.
+    sheet["J1"] = "Projeto"
+    sheet["K1"] = "Horas"
+    sheet["L1"] = "Ordem"
+    for row, project in enumerate(project_values, start=2):
+        sheet.cell(row=row, column=10, value=project)
+        sheet.cell(
+            row=row,
+            column=11,
+            value=_dashboard_metric_formula(
+                end_row,
+                "T",
+                extra_column="C",
+                extra_cell=f"$J{row}",
+                blank_label="(Sem projeto)",
+            ),
+        ).number_format = EXCEL_DURATION_FORMAT
+        sheet.cell(row=row, column=12, value=f'=IF(K{row}>0,K{row}+ROW()/1000000000,0)')
+
+    sheet["N1"] = "Atividade"
+    sheet["O1"] = "Horas"
+    sheet["P1"] = "Ordem"
+    for row, activity in enumerate(activity_values, start=2):
+        sheet.cell(row=row, column=14, value=activity)
+        sheet.cell(
+            row=row,
+            column=15,
+            value=_dashboard_metric_formula(
+                end_row,
+                "T",
+                extra_column="D",
+                extra_cell=f"$N{row}",
+                blank_label="(Sem atividade)",
+            ),
+        ).number_format = EXCEL_DURATION_FORMAT
+        sheet.cell(row=row, column=16, value=f'=IF(O{row}>0,O{row}+ROW()/1000000000,0)')
+
+    def add_ranking(
+        title: str,
+        label: str,
+        source_label_column: str,
+        source_value_column: str,
+        source_score_column: str,
+        source_count: int,
+        title_row: int,
+        chart_anchor: str,
+    ) -> None:
+        sheet.merge_cells(start_row=title_row, start_column=1, end_row=title_row, end_column=2)
+        sheet.cell(row=title_row, column=1, value=title)
+        sheet.cell(row=title_row, column=1).font = Font(bold=True, color=NAVY, size=12)
+        header_row = title_row + 1
+        sheet.cell(row=header_row, column=1, value=label)
+        sheet.cell(row=header_row, column=2, value="Horas")
+        _style_header_row(sheet, header_row, 1, 2)
+
+        if not source_count:
+            sheet.merge_cells(
+                start_row=header_row + 1,
+                start_column=1,
+                end_row=header_row + 2,
+                end_column=2,
+            )
+            sheet.cell(row=header_row + 1, column=1, value="Sem registros para o período.")
+            sheet.cell(row=header_row + 1, column=1).font = Font(color=MUTED, italic=True)
+            return
+
+        source_end = source_count + 1
+        ranking_count = min(10, source_count)
+        first_data_row = header_row + 1
+        last_data_row = first_data_row + ranking_count - 1
+        for row in range(first_data_row, last_data_row + 1):
+            rank = f"ROWS($A${first_data_row}:A{row})"
+            score_range = f"${source_score_column}$2:${source_score_column}${source_end}"
+            label_range = f"${source_label_column}$2:${source_label_column}${source_end}"
+            score = f"LARGE({score_range},{rank})"
+            sheet.cell(
+                row=row,
+                column=1,
+                value=(
+                    f'=IFERROR(IF({score}<=0,"",INDEX({label_range},'
+                    f'MATCH({score},{score_range},0))),"")'
+                ),
+            )
+            sheet.cell(
+                row=row,
+                column=2,
+                value=(
+                    f'=IF($A{row}="",NA(),INDEX(${source_value_column}$2:'
+                    f'${source_value_column}${source_end},MATCH($A{row},{label_range},0)))'
+                ),
+            ).number_format = EXCEL_DURATION_FORMAT
+            if (row - first_data_row) % 2:
+                for column in (1, 2):
+                    sheet.cell(row=row, column=column).fill = PatternFill("solid", fgColor=PALE)
+
+        chart = BarChart()
+        chart.type = "bar"
+        chart.style = 10
+        chart.title = title
+        chart.x_axis.title = "Duração"
+        chart.x_axis.numFmt = EXCEL_DURATION_FORMAT
+        chart.legend = None
+        chart.height = 6.4
+        chart.width = 12.5
+        chart.visible_cells_only = True
+        chart.add_data(
+            Reference(sheet, min_col=2, min_row=header_row, max_row=last_data_row),
+            titles_from_data=True,
+        )
+        chart.set_categories(
+            Reference(sheet, min_col=1, min_row=first_data_row, max_row=last_data_row)
+        )
+        sheet.add_chart(chart, chart_anchor)
+
+    add_ranking(
+        "Horas por projeto",
+        "Projeto",
+        "J",
+        "K",
+        "L",
+        len(project_values),
+        18,
+        "D18",
+    )
+    add_ranking(
+        "Horas por atividade / tarefa",
+        "Atividade / tarefa",
+        "N",
+        "O",
+        "P",
+        len(activity_values),
+        33,
+        "D33",
+    )
+
+    sheet["X1"] = "Data"
+    sheet["Y1"] = "Horas"
+    for row, record_day in enumerate(record_dates, start=2):
+        sheet.cell(row=row, column=24, value=record_day).number_format = "dd/mm/yyyy"
+        metric_formula = _dashboard_metric_formula(
+            end_row,
+            "T",
+            extra_column="X",
+            extra_cell=f"$X{row}",
+        )
+        sheet.cell(
+            row=row,
+            column=25,
+            value=f'=IF(OR($X{row}<$A$9,$X{row}>$C$9),NA(),{metric_formula[1:]})',
+        ).number_format = EXCEL_DURATION_FORMAT
+
+    if record_dates:
+        trend = LineChart()
+        trend.style = 10
+        trend.title = "Horas por dia"
+        trend.y_axis.title = "Duração"
+        trend.y_axis.numFmt = EXCEL_DURATION_FORMAT
+        trend.x_axis.title = "Data"
+        trend.x_axis.numFmt = "dd/mm"
+        trend.legend = None
+        trend.height = 7.2
+        trend.width = 19.5
+        trend.visible_cells_only = False
+        trend.add_data(
+            Reference(sheet, min_col=25, min_row=1, max_row=len(record_dates) + 1),
+            titles_from_data=True,
+        )
+        trend.set_categories(
+            Reference(sheet, min_col=24, min_row=2, max_row=len(record_dates) + 1)
+        )
+        if trend.series:
+            trend.series[0].marker.symbol = "circle"
+            trend.series[0].graphicalProperties.line.solidFill = BLUE
+        sheet.add_chart(trend, "A48")
+
+    for column in range(1, 9):
+        sheet.column_dimensions[get_column_letter(column)].width = 15
+    for column in range(10, 26):
+        sheet.column_dimensions[get_column_letter(column)].hidden = True
+    sheet.row_dimensions[6].height = 25
+    sheet.row_dimensions[9].height = 25
+    sheet.row_dimensions[11].height = 24
+    sheet.row_dimensions[14].height = 24
+    sheet.row_dimensions[15].height = 24
+    sheet.freeze_panes = "A4"
+    sheet.print_area = "A1:H64"
+    sheet.page_setup.orientation = "landscape"
+    sheet.page_setup.fitToWidth = 1
+    sheet.page_setup.fitToHeight = 0
+    sheet.sheet_properties.pageSetUpPr.fitToPage = True
 
 
 def export_excel(
@@ -290,217 +717,23 @@ def export_excel(
 
     target = _normalized_path(path, ".xlsx")
     generated_at = generated_at or datetime.now()
-    active_entries = [(user, record) for user, record in entries if not record.deleted]
-    deleted_entries = [(user, record) for user, record in entries if record.deleted]
 
     workbook = Workbook()
-    summary = workbook.active
-    summary.title = "Resumo"
-    summary.sheet_view.showGridLines = False
-    summary.merge_cells("A1:H2")
-    summary["A1"] = f"{APP_TITLE} — Relatório de horas"
-    _style_title(summary["A1"])
-    summary.row_dimensions[1].height = 26
-    summary.row_dimensions[2].height = 12
-
-    if period_label:
-        summary["A4"] = "Período consultado"
-        summary["B4"] = period_label
-    else:
-        summary["A4"] = "Data consultada"
-        summary["B4"] = report_date
-        summary["B4"].number_format = "dd/mm/yyyy"
-    summary["D4"] = "Gerado em"
-    summary["E4"] = generated_at
-    summary["E4"].number_format = "dd/mm/yyyy hh:mm"
-
-    summary["A6"] = "Filtros aplicados"
-    summary["A6"].font = Font(bold=True, color=NAVY)
-    row = 7
-    for label, value in (
-        ("Projeto", filters.get("projeto", "Todos")),
-        ("Tipo de atividade", filters.get("tipo", "Todos")),
-        ("Origem", filters.get("origem", "Todos")),
-        ("Status", filters.get("status", "Todos")),
-        ("Escopo", filters.get("escopo", "Filtros atuais do Dashboard")),
-    ):
-        summary.cell(row=row, column=1, value=label)
-        summary.cell(row=row, column=2, value=value)
-        row += 1
-
-    cards = [
-        ("Horas válidas", None),
-        ("Registros válidos", None),
-        ("Registros manuais", None),
-        ("Registros excluídos", None),
-    ]
-    card_columns = [1, 3, 5, 7]
-    value_cells = []
-    for column, (label, _value) in zip(card_columns, cards):
-        label_cell = summary.cell(row=12, column=column, value=label)
-        value_cell = summary.cell(row=13, column=column)
-        value_cells.append(value_cell)
-        summary.merge_cells(start_row=12, start_column=column, end_row=12, end_column=column + 1)
-        summary.merge_cells(start_row=13, start_column=column, end_row=14, end_column=column + 1)
-        label_cell.fill = PatternFill("solid", fgColor=LIGHT_BLUE)
-        label_cell.font = Font(bold=True, color=NAVY)
-        label_cell.alignment = Alignment(horizontal="center", vertical="center")
-        value_cell.fill = PatternFill("solid", fgColor=WHITE)
-        value_cell.font = Font(bold=True, color=TEXT, size=18)
-        value_cell.alignment = Alignment(horizontal="center", vertical="center")
-
-    user_summary: dict[str, dict[str, int]] = defaultdict(lambda: {"seconds": 0, "records": 0, "manual": 0, "deleted": 0})
-    project_summary: dict[str, dict[str, int]] = defaultdict(lambda: {"seconds": 0, "records": 0, "manual": 0, "deleted": 0})
-    for monitored_user, record in entries:
-        user_metrics = user_summary[monitored_user]
-        project_metrics = project_summary[record.project]
-        if record.deleted:
-            user_metrics["deleted"] += 1
-            project_metrics["deleted"] += 1
-            continue
-        for metrics in (user_metrics, project_metrics):
-            metrics["seconds"] += record.duration_seconds
-            metrics["records"] += 1
-            if record.origin == "MANUAL":
-                metrics["manual"] += 1
-
-    user_sheet = workbook.create_sheet("Usuários")
-    user_headers = ["Usuário", "Horas válidas", "Registros", "Manuais", "Excluídos"]
-    user_sheet.append(user_headers)
-    _style_header_row(user_sheet, 1, 1, len(user_headers))
-    for name in sorted(user_summary, key=str.casefold):
-        metrics = user_summary[name]
-        user_sheet.append([
-            name,
-            _excel_duration_value(metrics["seconds"]),
-            metrics["records"],
-            metrics["manual"],
-            metrics["deleted"],
-        ])
-    for cell in user_sheet["B"][1:]:
-        cell.number_format = EXCEL_DURATION_FORMAT
-    user_sheet.freeze_panes = "A2"
-    _add_table(user_sheet, 1, len(user_summary) + 1, len(user_headers), "tbUsuarios")
-    _autosize(user_sheet)
-
-    project_sheet = workbook.create_sheet("Projetos")
-    project_headers = ["Projeto", "Horas válidas", "Registros", "Manuais", "Excluídos"]
-    project_sheet.append(project_headers)
-    _style_header_row(project_sheet, 1, 1, len(project_headers))
-    for name in sorted(project_summary, key=str.casefold):
-        metrics = project_summary[name]
-        project_sheet.append([
-            name,
-            _excel_duration_value(metrics["seconds"]),
-            metrics["records"],
-            metrics["manual"],
-            metrics["deleted"],
-        ])
-    for cell in project_sheet["B"][1:]:
-        cell.number_format = EXCEL_DURATION_FORMAT
-    project_sheet.freeze_panes = "A2"
-    _add_table(project_sheet, 1, len(project_summary) + 1, len(project_headers), "tbProjetos")
-    _autosize(project_sheet)
-
+    dashboard = workbook.active
+    dashboard.title = "Dashboard"
     _write_detail_sheet(workbook, "Registros", entries, "tbRegistros")
-    _write_detail_sheet(workbook, "Auditoria", deleted_entries, "tbAuditoria", deleted_style=True)
-
-    # Dynamic management summary. Filters applied directly in Registros,
-    # Usuários or Projetos are detected through SUBTOTAL. The first filtered
-    # source in the order Registros > Usuários > Projetos controls the cards.
-    registros_end = max(2, len(entries) + 1)
-    usuarios_end = max(2, len(user_summary) + 1)
-    projetos_end = max(2, len(project_summary) + 1)
-
-    registros_filtered = (
-        f'SUBTOTAL(103,Registros!$R$2:$R${registros_end})'
-        f'<COUNTA(Registros!$R$2:$R${registros_end})'
+    _write_dashboard_sheet(
+        dashboard,
+        entries,
+        report_date,
+        filters,
+        generated_at,
+        period_label,
     )
-    usuarios_filtered = (
-        f'SUBTOTAL(103,Usuários!$A$2:$A${usuarios_end})'
-        f'<COUNTA(Usuários!$A$2:$A${usuarios_end})'
-    )
-    projetos_filtered = (
-        f'SUBTOTAL(103,Projetos!$A$2:$A${projetos_end})'
-        f'<COUNTA(Projetos!$A$2:$A${projetos_end})'
-    )
-
-    source_formula = (
-        f'=IF({registros_filtered},"Registros",'
-        f'IF({usuarios_filtered},"Usuários",'
-        f'IF({projetos_filtered},"Projetos","Todos os registros")))'
-    )
-    summary["A16"] = "Fonte ativa dos indicadores"
-    summary["A16"].font = Font(bold=True, color=NAVY)
-    summary["B16"] = source_formula
-    summary["B16"].font = Font(bold=True, color=BLUE)
-    summary.merge_cells("B16:D16")
-    summary["E16"] = "Prioridade: Registros > Usuários > Projetos"
-    summary["E16"].font = Font(color=MUTED, italic=True, size=9)
-    summary.merge_cells("E16:H16")
-
-    def dynamic_metric(reg_col: str, user_col: str, project_col: str) -> str:
-        return (
-            f'=IF({registros_filtered},SUBTOTAL(109,Registros!${reg_col}$2:${reg_col}${registros_end}),'
-            f'IF({usuarios_filtered},SUBTOTAL(109,Usuários!${user_col}$2:${user_col}${usuarios_end}),'
-            f'IF({projetos_filtered},SUBTOTAL(109,Projetos!${project_col}$2:${project_col}${projetos_end}),'
-            f'SUM(Registros!${reg_col}$2:${reg_col}${registros_end}))))'
-        )
-
-    # Hidden helper columns in Registros: T hours, U active records,
-    # V active manual records, W deleted records. Aggregate sheets expose the
-    # equivalent metrics in B/C/D/E.
-    value_cells[0].value = dynamic_metric("T", "B", "B")
-    value_cells[0].number_format = EXCEL_DURATION_FORMAT
-    value_cells[1].value = dynamic_metric("U", "C", "C")
-    value_cells[1].number_format = "0"
-    value_cells[2].value = dynamic_metric("V", "D", "D")
-    value_cells[2].number_format = "0"
-    value_cells[3].value = dynamic_metric("W", "E", "E")
-    value_cells[3].number_format = "0"
-
-    if user_summary:
-        chart = BarChart()
-        chart.type = "bar"
-        chart.style = 10
-        chart.title = "Horas por usuário"
-        chart.y_axis.title = "Usuário"
-        chart.x_axis.title = "Duração"
-        chart.x_axis.numFmt = EXCEL_DURATION_FORMAT
-        data = Reference(user_sheet, min_col=2, min_row=1, max_row=len(user_summary) + 1)
-        categories = Reference(user_sheet, min_col=1, min_row=2, max_row=len(user_summary) + 1)
-        chart.add_data(data, titles_from_data=True)
-        chart.set_categories(categories)
-        chart.height = 7
-        chart.width = 12
-        chart.visible_cells_only = True
-        summary.add_chart(chart, "A18")
-
-    if project_summary:
-        chart = BarChart()
-        chart.type = "bar"
-        chart.style = 10
-        chart.title = "Horas por projeto"
-        chart.y_axis.title = "Projeto"
-        chart.x_axis.title = "Duração"
-        chart.x_axis.numFmt = EXCEL_DURATION_FORMAT
-        data = Reference(project_sheet, min_col=2, min_row=1, max_row=len(project_summary) + 1)
-        categories = Reference(project_sheet, min_col=1, min_row=2, max_row=len(project_summary) + 1)
-        chart.add_data(data, titles_from_data=True)
-        chart.set_categories(categories)
-        chart.height = 7
-        chart.width = 12
-        chart.visible_cells_only = True
-        summary.add_chart(chart, "I18")
-
-    for column in range(1, 17):
-        summary.column_dimensions[get_column_letter(column)].width = 13
-    summary.column_dimensions["A"].width = 20
-    summary.column_dimensions["B"].width = 18
-    summary.freeze_panes = "A4"
 
     workbook.calculation.calcMode = "auto"
     workbook.calculation.fullCalcOnLoad = True
     workbook.calculation.forceFullCalc = True
+    workbook.active = 0
     workbook.save(target)
     return target
