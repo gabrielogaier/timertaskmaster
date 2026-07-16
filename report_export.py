@@ -8,6 +8,8 @@ from typing import Iterable, Sequence
 try:
     from openpyxl import Workbook
     from openpyxl.chart import BarChart, LineChart, Reference
+    from openpyxl.chart.axis import DateAxis
+    from openpyxl.chart.label import DataLabelList
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.worksheet.datavalidation import DataValidation
     from openpyxl.worksheet.table import Table, TableStyleInfo
@@ -15,6 +17,7 @@ try:
 except ModuleNotFoundError:
     Workbook = None
     BarChart = LineChart = Reference = None
+    DateAxis = DataLabelList = None
     Alignment = Border = Font = PatternFill = Side = None
     DataValidation = None
     Table = TableStyleInfo = None
@@ -38,7 +41,13 @@ BORDER = "D7DEEA"
 RecordEntry = tuple[str, CsvRecord]
 
 EXCEL_DURATION_FORMAT = '[h]:mm "h"'
+EXCEL_CHART_DURATION_FORMAT = '[h]:mm "h";-[h]:mm "h";;'
 SECONDS_PER_DAY = 24 * 60 * 60
+
+PROJECT_RANKING_ROW = 18
+ACTIVITY_RANKING_ROW = 37
+DAILY_CHART_ROW = 56
+DASHBOARD_PRINT_END_ROW = 73
 
 
 def format_report_duration(total_seconds: int) -> str:
@@ -56,6 +65,30 @@ def _excel_duration_value(total_seconds: int) -> float:
     sums, filtered totals and charts.
     """
     return max(0, int(total_seconds)) / SECONDS_PER_DAY
+
+
+def _configure_excel_recalculation(workbook: Workbook) -> None:
+    """Ask spreadsheet applications to rebuild formula and chart results.
+
+    openpyxl writes formulas but does not calculate them. A zero calculation
+    engine id and an incomplete calculation state make Excel discard stale
+    cached results and perform a full calculation when the workbook opens.
+    Optional properties are guarded to preserve compatibility across the
+    supported openpyxl 3.1.x range.
+    """
+    calculation = workbook.calculation
+    settings = {
+        "calcMode": "auto",
+        "fullCalcOnLoad": True,
+        "forceFullCalc": True,
+        "calcOnSave": True,
+        "calcCompleted": False,
+        "fullPrecision": True,
+        "calcId": 0,
+    }
+    for attribute, value in settings.items():
+        if hasattr(calculation, attribute):
+            setattr(calculation, attribute, value)
 
 
 def _normalized_path(path: str | Path, suffix: str) -> Path:
@@ -611,9 +644,19 @@ def _write_dashboard_sheet(
         chart.x_axis.title = "Duração"
         chart.x_axis.numFmt = EXCEL_DURATION_FORMAT
         chart.legend = None
-        chart.height = 6.4
+        chart.height = 7.6
         chart.width = 12.5
         chart.visible_cells_only = True
+        chart.dLbls = DataLabelList()
+        chart.dLbls.showVal = True
+        chart.dLbls.dLblPos = "outEnd"
+        chart.dLbls.numFmt = EXCEL_CHART_DURATION_FORMAT
+        chart.dLbls.showLegendKey = False
+        chart.dLbls.showCatName = False
+        chart.dLbls.showSerName = False
+        chart.dLbls.showPercent = False
+        chart.dLbls.showBubbleSize = False
+        chart.dLbls.showLeaderLines = False
         chart.add_data(
             Reference(sheet, min_col=2, min_row=header_row, max_row=last_data_row),
             titles_from_data=True,
@@ -630,8 +673,8 @@ def _write_dashboard_sheet(
         "K",
         "L",
         len(project_values),
-        18,
-        "D18",
+        PROJECT_RANKING_ROW,
+        f"D{PROJECT_RANKING_ROW}",
     )
     add_ranking(
         "Horas por atividade / tarefa",
@@ -640,8 +683,8 @@ def _write_dashboard_sheet(
         "O",
         "P",
         len(activity_values),
-        33,
-        "D33",
+        ACTIVITY_RANKING_ROW,
+        f"D{ACTIVITY_RANKING_ROW}",
     )
 
     sheet["X1"] = "Data"
@@ -654,10 +697,14 @@ def _write_dashboard_sheet(
             extra_column="X",
             extra_cell=f"$X{row}",
         )
+        metric_expression = metric_formula[1:]
         sheet.cell(
             row=row,
             column=25,
-            value=f'=IF(OR($X{row}<$A$9,$X{row}>$C$9),NA(),{metric_formula[1:]})',
+            value=(
+                f'=IF(OR($X{row}<$A$9,$X{row}>$C$9,'
+                f'{metric_expression}<=0),NA(),{metric_expression})'
+            ),
         ).number_format = EXCEL_DURATION_FORMAT
 
     if record_dates:
@@ -666,12 +713,25 @@ def _write_dashboard_sheet(
         trend.title = "Horas por dia"
         trend.y_axis.title = "Duração"
         trend.y_axis.numFmt = EXCEL_DURATION_FORMAT
+        trend.x_axis = DateAxis(axId=10, axPos="b", crossAx=100)
         trend.x_axis.title = "Data"
-        trend.x_axis.numFmt = "dd/mm"
+        trend.x_axis.number_format = "dd/mm"
+        trend.x_axis.baseTimeUnit = "days"
         trend.legend = None
-        trend.height = 7.2
+        trend.height = 8.0
         trend.width = 19.5
         trend.visible_cells_only = False
+        trend.display_blanks = "gap"
+        trend.dLbls = DataLabelList()
+        trend.dLbls.showVal = True
+        trend.dLbls.dLblPos = "t"
+        trend.dLbls.numFmt = EXCEL_CHART_DURATION_FORMAT
+        trend.dLbls.showLegendKey = False
+        trend.dLbls.showCatName = False
+        trend.dLbls.showSerName = False
+        trend.dLbls.showPercent = False
+        trend.dLbls.showBubbleSize = False
+        trend.dLbls.showLeaderLines = False
         trend.add_data(
             Reference(sheet, min_col=25, min_row=1, max_row=len(record_dates) + 1),
             titles_from_data=True,
@@ -681,8 +741,9 @@ def _write_dashboard_sheet(
         )
         if trend.series:
             trend.series[0].marker.symbol = "circle"
+            trend.series[0].marker.size = 7
             trend.series[0].graphicalProperties.line.solidFill = BLUE
-        sheet.add_chart(trend, "A48")
+        sheet.add_chart(trend, f"A{DAILY_CHART_ROW}")
 
     for column in range(1, 9):
         sheet.column_dimensions[get_column_letter(column)].width = 15
@@ -694,10 +755,10 @@ def _write_dashboard_sheet(
     sheet.row_dimensions[14].height = 24
     sheet.row_dimensions[15].height = 24
     sheet.freeze_panes = "A4"
-    sheet.print_area = "A1:H64"
+    sheet.print_area = f"A1:H{DASHBOARD_PRINT_END_ROW}"
     sheet.page_setup.orientation = "landscape"
     sheet.page_setup.fitToWidth = 1
-    sheet.page_setup.fitToHeight = 0
+    sheet.page_setup.fitToHeight = 2
     sheet.sheet_properties.pageSetUpPr.fitToPage = True
 
 
@@ -731,9 +792,7 @@ def export_excel(
         period_label,
     )
 
-    workbook.calculation.calcMode = "auto"
-    workbook.calculation.fullCalcOnLoad = True
-    workbook.calculation.forceFullCalc = True
+    _configure_excel_recalculation(workbook)
     workbook.active = 0
     workbook.save(target)
     return target
