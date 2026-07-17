@@ -64,6 +64,49 @@ class UiSmokeTests(unittest.TestCase):
         window.force_quit = True
         window.close()
 
+    def test_timer_tab_refreshes_total_for_current_date(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            db_path = root / "timertask.db"
+            csv_base = root / "base"
+            today = QDate.currentDate()
+            today_text = today.toString("yyyy-MM-dd")
+            timer_db = Database(db_path)
+            timer_db.set_setting("user_name", "Usuário Teste")
+            timer_db.set_setting("base_folder", str(csv_base))
+            append_record(
+                str(csv_base),
+                {
+                    "registro_id": "today-total-ui-1",
+                    "usuario": "Usuário Teste",
+                    "origem_registro": "TIMER",
+                    "projeto": "Projeto UI",
+                    "tipo_atividade": "Teste",
+                    "descricao": "Registro de hoje",
+                    "inicio": f"{today_text} 08:00:00",
+                    "fim": f"{today_text} 08:01:30",
+                    "duracao_segundos": 90,
+                    "duracao_formatada": "00:01:30",
+                    "observacao": "",
+                    "computador": "PC",
+                    "data_registro": f"{today_text} 08:01:30",
+                },
+            )
+            master_db = MasterDatabase(db_path)
+            window = MainWindow(timer_db, master_db)
+            window.tabs.setCurrentWidget(window.dashboard_tab)
+            window.history_date.setDate(today.addDays(-1))
+            window.today_total_label.setText("Total registrado hoje: 06:22:27")
+
+            window.tabs.setCurrentWidget(window.timer_tab)
+
+            self.assertEqual(window.history_date.date(), today)
+            self.assertEqual(
+                window.today_total_label.text(),
+                "Total registrado hoje: 00:01:30",
+            )
+            window.force_quit = True
+            window.close()
 
     def test_deleted_record_is_red_and_not_counted_in_dashboard_or_history(self):
         with tempfile.TemporaryDirectory() as temporary:

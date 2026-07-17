@@ -183,6 +183,7 @@ class MainWindow(QMainWindow):
         self._build_catalog_tab()
         self._build_settings_tab()
         self._build_tray()
+        self.tabs.currentChanged.connect(self._refresh_today_on_timer_tab)
 
         self.clock_timer = QTimer(self)
         self.clock_timer.setInterval(1000)
@@ -871,6 +872,15 @@ class MainWindow(QMainWindow):
             self.tray.setToolTip(APP_NAME)
 
         self.update_pending_status()
+
+    def _refresh_today_on_timer_tab(self, index: int) -> None:
+        if self.tabs.widget(index) != self.timer_tab:
+            return
+        today = QDate.currentDate()
+        if self.history_date.date() != today:
+            self.history_date.setDate(today)
+        else:
+            self.refresh_history()
 
     def refresh_history(self) -> None:
         user_name = self.db.get_setting("user_name").strip()
