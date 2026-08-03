@@ -15,7 +15,7 @@ import app as combined_app
 from app import ExportOptionsDialog, MainWindow
 from database import Database
 from master_database import MasterDatabase
-from timer_app import app_data_dir
+from timer_app import HistoryDetailsDialog, app_data_dir
 from csv_store import append_audit_action, append_record
 
 
@@ -105,6 +105,77 @@ class UiSmokeTests(unittest.TestCase):
                 window.today_total_label.text(),
                 "Total registrado hoje: 00:01:30",
             )
+            window.force_quit = True
+            window.close()
+
+    def test_double_click_opens_complete_history_details(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            db_path = root / "timertask.db"
+            csv_base = root / "base"
+            timer_db = Database(db_path)
+            timer_db.set_setting("user_name", "Usuário Teste")
+            timer_db.set_setting("base_folder", str(csv_base))
+            append_record(
+                str(csv_base),
+                {
+                    "registro_id": "history-details-1",
+                    "usuario": "Usuário Teste",
+                    "origem_registro": "MANUAL",
+                    "projeto": "Projeto Detalhes",
+                    "tipo_atividade": "Documentação",
+                    "descricao": "Descrição completa da atividade",
+                    "inicio": "2026-08-03 08:00:00",
+                    "fim": "2026-08-03 09:15:00",
+                    "duracao_segundos": 4500,
+                    "duracao_formatada": "01:15:00",
+                    "observacao": "Observação completa do registro",
+                    "computador": "PC-DETALHES",
+                    "data_registro": "2026-08-03 09:15:01",
+                },
+            )
+            master_db = MasterDatabase(db_path)
+            window = MainWindow(timer_db, master_db)
+            window.history_date.setDate(QDate(2026, 8, 3))
+            window.refresh_history()
+
+            dialog = HistoryDetailsDialog(window.history_rows[0])
+            self.assertEqual(
+                set(dialog.value_labels),
+                {key for key, _label in HistoryDetailsDialog.DETAIL_FIELDS},
+            )
+            self.assertEqual(dialog.value_labels["status"].text(), "ATIVO")
+            self.assertEqual(
+                dialog.value_labels["descricao"].text(),
+                "Descrição completa da atividade",
+            )
+            self.assertEqual(
+                dialog.value_labels["observacao"].text(),
+                "Observação completa do registro",
+            )
+            dialog.close()
+
+            deleted_dialog = HistoryDetailsDialog(
+                {
+                    **window.history_rows[0],
+                    "excluido": "1",
+                    "usuario_exclusao": "Gestor Teste",
+                    "data_exclusao": "2026-08-03 10:00:00",
+                    "motivo_exclusao": "Registro duplicado",
+                    "acao_id_exclusao": "audit-details-1",
+                }
+            )
+            self.assertEqual(deleted_dialog.value_labels["status"].text(), "EXCLUÍDO")
+            self.assertEqual(
+                deleted_dialog.value_labels["motivo_exclusao"].text(),
+                "Registro duplicado",
+            )
+            deleted_dialog.close()
+
+            with patch.object(HistoryDetailsDialog, "exec", return_value=0) as modal_exec:
+                window.history_table.cellDoubleClicked.emit(0, 4)
+            modal_exec.assert_called_once_with()
+
             window.force_quit = True
             window.close()
 

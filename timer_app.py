@@ -155,6 +155,77 @@ class FinishDialog(QDialog):
         return self.observation.toPlainText().strip()
 
 
+class HistoryDetailsDialog(QDialog):
+    DETAIL_FIELDS = [
+        ("status", "Status"),
+        ("registro_id", "ID do registro"),
+        ("usuario", "Usuário"),
+        ("origem_registro", "Origem"),
+        ("projeto", "Projeto"),
+        ("tipo_atividade", "Tipo de atividade"),
+        ("descricao", "Descrição"),
+        ("inicio", "Início"),
+        ("fim", "Fim"),
+        ("duracao_formatada", "Duração"),
+        ("duracao_segundos", "Duração em segundos"),
+        ("observacao", "Observação"),
+        ("computador", "Computador"),
+        ("data_registro", "Registrado em"),
+        ("usuario_exclusao", "Excluído por"),
+        ("data_exclusao", "Excluído em"),
+        ("motivo_exclusao", "Motivo da exclusão"),
+        ("acao_id_exclusao", "ID da exclusão"),
+    ]
+
+    def __init__(self, record: dict[str, object], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Detalhes do registro")
+        self.resize(680, 560)
+
+        layout = QVBoxLayout(self)
+        title = QLabel("Informações completas do registro selecionado")
+        title.setStyleSheet("font-size: 16px; font-weight: 600;")
+        layout.addWidget(title)
+
+        deleted = str(record.get("excluido", "0")) == "1"
+        values = dict(record)
+        values["status"] = "EXCLUÍDO" if deleted else "ATIVO"
+        values["origem_registro"] = record.get("origem_registro") or "TIMER"
+        if not str(values.get("duracao_formatada", "")).strip():
+            try:
+                values["duracao_formatada"] = format_duration(
+                    int(record.get("duracao_segundos", 0))
+                )
+            except (TypeError, ValueError):
+                values["duracao_formatada"] = ""
+
+        form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        self.value_labels: dict[str, QLabel] = {}
+        for key, label_text in self.DETAIL_FIELDS:
+            value_label = QLabel(self._display_value(values.get(key)))
+            value_label.setWordWrap(True)
+            value_label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            self.value_labels[key] = value_label
+            form.addRow(f"{label_text}:", value_label)
+        layout.addLayout(form)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        close_button = QPushButton("Fechar")
+        close_button.setDefault(True)
+        close_button.clicked.connect(self.accept)
+        buttons.addWidget(close_button)
+        layout.addLayout(buttons)
+
+    @staticmethod
+    def _display_value(value: object) -> str:
+        text = "" if value is None else str(value).strip()
+        return text or "—"
+
+
 class MainWindow(QMainWindow):
     def __init__(self, db: Database) -> None:
         super().__init__()
@@ -335,6 +406,10 @@ class MainWindow(QMainWindow):
         top.addWidget(self.history_total_label)
         layout.addLayout(top)
 
+        history_hint = QLabel("Clique duas vezes em uma linha para ver os detalhes completos.")
+        history_hint.setStyleSheet("color: #667085;")
+        layout.addWidget(history_hint)
+
         headers = [
             "Início", "Fim", "Projeto", "Tipo", "Descrição", "Duração",
             "Origem", "Status", "Observação"
@@ -344,6 +419,7 @@ class MainWindow(QMainWindow):
         self.history_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.history_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.history_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.history_table.cellDoubleClicked.connect(self.show_history_details)
         self.history_table.horizontalHeader().setStretchLastSection(True)
         self.history_table.setColumnWidth(0, 70)
         self.history_table.setColumnWidth(1, 70)
@@ -951,6 +1027,11 @@ class MainWindow(QMainWindow):
                 f"Total registrado hoje: {format_duration(valid_total_seconds)}"
             )
         self.update_pending_status()
+
+    def show_history_details(self, row_index: int, _column_index: int = 0) -> None:
+        if row_index < 0 or row_index >= len(self.history_rows):
+            return
+        HistoryDetailsDialog(self.history_rows[row_index], self).exec()
 
     def delete_selected_history_record(self) -> None:
         row_index = self.history_table.currentRow()
