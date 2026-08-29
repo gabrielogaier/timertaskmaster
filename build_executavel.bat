@@ -18,12 +18,14 @@ if not exist ".venv-build\Scripts\python.exe" (
 )
 set "BUILD_PYTHON=%CD%\.venv-build\Scripts\python.exe"
 
-"%BUILD_PYTHON%" -c "import PyInstaller, PySide6, openpyxl" >nul 2>&1
+"%BUILD_PYTHON%" -c "import PyInstaller, PySide6, openpyxl, shiboken6; from PySide6 import QtCore; assert PySide6.__version__ == shiboken6.__version__" >nul 2>&1
 if errorlevel 1 (
-    echo Instalando ferramentas de compilacao...
+    echo Reparando ferramentas de compilacao e bibliotecas Qt...
     "%BUILD_PYTHON%" -m pip install --upgrade pip
     if errorlevel 1 goto :error
-    "%BUILD_PYTHON%" -m pip install -r requirements.txt -r requirements-build.txt
+    "%BUILD_PYTHON%" -m pip install --upgrade --force-reinstall --no-cache-dir -r requirements.txt -r requirements-build.txt
+    if errorlevel 1 goto :error
+    "%BUILD_PYTHON%" -c "import PyInstaller, PySide6, openpyxl, shiboken6; from PySide6 import QtCore; assert PySide6.__version__ == shiboken6.__version__"
     if errorlevel 1 goto :error
 )
 
@@ -52,6 +54,8 @@ echo Criando executavel...
     --windowed ^
     --name "Timer Task Master" ^
     --icon "%BUILD_ICON%" ^
+    --collect-all PySide6 ^
+    --collect-all shiboken6 ^
     --add-data "icons;icons" ^
     --version-file "installer\version_info.txt" ^
     "app.py"
