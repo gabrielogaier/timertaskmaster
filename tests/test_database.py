@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from database import Database, FAILED_STATUS
+from database import Database, FAILED_STATUS, SYNCED_STATUS
 
 
 class DatabaseTests(unittest.TestCase):
@@ -21,7 +21,7 @@ class DatabaseTests(unittest.TestCase):
         self.assertGreaterEqual(len(projects), 1)
         self.assertGreaterEqual(len(activity_types), 1)
 
-    def test_pending_record_lifecycle(self) -> None:
+    def test_task_record_lifecycle_keeps_local_history_after_sync(self) -> None:
         record = {
             "registro_id": "record-1",
             "usuario": "Teste",
@@ -37,16 +37,19 @@ class DatabaseTests(unittest.TestCase):
             "computador": "TESTE",
             "data_registro": "2026-07-11 09:00:00",
         }
-        self.db.add_pending_record(record)
+        self.db.add_task_record(record)
         self.assertEqual(self.db.pending_count(), 1)
 
-        self.db.mark_pending_error("record-1", "Falha simulada")
-        pending = self.db.list_pending_records()[0]
+        self.db.mark_task_error("record-1", "Falha simulada")
+        pending = self.db.list_task_records(pending_only=True)[0]
         self.assertEqual(pending["status"], FAILED_STATUS)
         self.assertEqual(pending["attempts"], 1)
 
-        self.db.remove_pending_record("record-1")
+        self.db.mark_task_synced("record-1")
         self.assertEqual(self.db.pending_count(), 0)
+        records = self.db.list_task_records()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["status"], SYNCED_STATUS)
 
 class AuditDatabaseTests(unittest.TestCase):
     def test_audit_action_lifecycle(self) -> None:

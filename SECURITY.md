@@ -2,7 +2,7 @@
 
 ## Dados processados
 
-O Timer Task Master armazena localmente configurações, projetos, tipos de atividade, timer ativo e registros pendentes em SQLite. Registros concluídos são enviados para a pasta CSV definida pelo usuário.
+O Timer Task Master armazena localmente configurações, projetos, tipos de atividade, timer ativo, histórico permanente de tasks e auditorias em SQLite. Registros concluídos são sincronizados para a pasta CSV definida pelo usuário, sem serem removidos do banco local.
 
 O aplicativo não possui serviço em nuvem, telemetria ou envio automático de dados para terceiros.
 

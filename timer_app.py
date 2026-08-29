@@ -44,7 +44,7 @@ from csv_store import (
     append_audit_action,
     append_record,
     apply_audit_actions,
-    read_records_for_date,
+    read_all_records,
     test_write_access,
 )
 from database import Database
@@ -491,12 +491,18 @@ class MainWindow(QMainWindow):
         test_button = QPushButton("Testar acesso")
         save_button = QPushButton("Salvar configurações")
         sync_button = QPushButton("Registrar Tasks")
+        import_button = QPushButton("Importar CSVs")
+        rebuild_button = QPushButton("Reconstruir CSVs")
         test_button.clicked.connect(self.test_base_folder)
         save_button.clicked.connect(self.save_settings)
         sync_button.clicked.connect(lambda: self.register_pending_records(show_result=True))
+        import_button.clicked.connect(self.import_existing_csvs)
+        rebuild_button.clicked.connect(self.reconcile_csv_records)
         buttons.addWidget(test_button)
         buttons.addWidget(save_button)
         buttons.addWidget(sync_button)
+        buttons.addWidget(import_button)
+        buttons.addWidget(rebuild_button)
         buttons.addStretch()
         layout.addLayout(buttons)
 
@@ -745,15 +751,17 @@ class MainWindow(QMainWindow):
 
     def _persist_completed_record(self, record: dict) -> bool:
         """Salva primeiro no SQLite e depois tenta registrar no CSV compartilhado."""
-        self.db.add_pending_record(record)
+        self.db.add_task_record(record)
+        logging.info("Task %s salva no SQLite", record["registro_id"])
         base_folder = self.db.get_setting("base_folder").strip()
         try:
             append_record(base_folder, record)
-            self.db.remove_pending_record(record["registro_id"])
+            self.db.mark_task_synced(record["registro_id"])
+            logging.info("Task %s sincronizada com CSV", record["registro_id"])
             return True
         except Exception as exc:
-            logging.exception("Falha ao gravar CSV; registro mantido no SQLite")
-            self.db.mark_pending_error(record["registro_id"], str(exc))
+            self.db.mark_task_error(record["registro_id"], str(exc))
+            logging.warning("Task %s permanece no SQLite - falha ao acessar CSV: %s", record["registro_id"], exc)
             return False
 
     def save_manual_record(self) -> None:
@@ -960,17 +968,13 @@ class MainWindow(QMainWindow):
 
     def refresh_history(self) -> None:
         user_name = self.db.get_setting("user_name").strip()
-        base_folder = self.db.get_setting("base_folder").strip()
         qdate = self.history_date.date()
         selected_date = datetime(qdate.year(), qdate.month(), qdate.day())
-        try:
-            rows = read_records_for_date(base_folder, user_name, selected_date)
-            local_actions = [item["data"] for item in self.db.list_audit_actions()]
-            rows = apply_audit_actions(rows, local_actions)
-            self.connection_label.setText("")
-        except Exception as exc:
-            rows = []
-            self.connection_label.setText(f"Pasta compartilhada indisponível: {exc}")
+        rows = [item["data"] for item in self.db.list_task_records(
+            user_name=user_name, selected_date=selected_date
+        )]
+        local_actions = [item["data"] for item in self.db.list_audit_actions()]
+        rows = apply_audit_actions(rows, local_actions)
 
         valid_total_seconds = 0
         for row in rows:
@@ -1149,7 +1153,7 @@ class MainWindow(QMainWindow):
                 )
             return
 
-        pending_records = self.db.list_pending_records()
+        pending_records = self.db.list_task_records(pending_only=True)
         pending_actions = self.db.list_audit_actions(pending_only=True)
         if not pending_records and not pending_actions:
             self.update_pending_status()
@@ -1166,12 +1170,13 @@ class MainWindow(QMainWindow):
         for pending in pending_records:
             try:
                 append_record(base_folder, pending["data"])
-                self.db.remove_pending_record(pending["record_id"])
+                self.db.mark_task_synced(pending["record_id"])
                 registered += 1
+                logging.info("Task %s sincronizada com CSV", pending["record_id"])
             except Exception as exc:
-                self.db.mark_pending_error(pending["record_id"], str(exc))
+                self.db.mark_task_error(pending["record_id"], str(exc))
                 failed += 1
-                logging.warning("Task %s não registrada no CSV: %s", pending["record_id"], exc)
+                logging.warning("Task %s permanece no SQLite - falha ao acessar CSV: %s", pending["record_id"], exc)
 
         for pending in pending_actions:
             try:
@@ -1212,7 +1217,7 @@ class MainWindow(QMainWindow):
                 )
 
     def update_pending_status(self) -> None:
-        pending_records = self.db.list_pending_records()
+        pending_records = self.db.list_task_records(pending_only=True)
         pending_actions = self.db.list_audit_actions(pending_only=True)
         count = len(pending_records) + len(pending_actions)
         failed = sum(1 for item in pending_records if item.get("status") == "FALHA")
@@ -1250,6 +1255,45 @@ class MainWindow(QMainWindow):
             self.connection_label.setText(f"{count} item(ns) aguardando registro nos CSVs")
         elif not self.connection_label.text().startswith("Pasta compartilhada"):
             self.connection_label.setText("")
+
+    def import_existing_csvs(self) -> None:
+        user_name = self.db.get_setting("user_name").strip()
+        base_folder = self.db.get_setting("base_folder").strip()
+        if not user_name or not base_folder:
+            QMessageBox.warning(self, "Importar CSVs", "Configure o usuário e a pasta-base antes de importar.")
+            return
+        try:
+            imported = self.db.import_task_records(read_all_records(base_folder, user_name))
+            logging.info("Importação de CSV concluída: %s registro(s) novo(s)", imported)
+            self.refresh_history()
+            QMessageBox.information(self, "Importar CSVs", f"{imported} registro(s) histórico(s) importado(s) para o SQLite.")
+        except Exception as exc:
+            logging.exception("Falha ao importar CSVs")
+            QMessageBox.warning(self, "Importar CSVs", f"Não foi possível importar os CSVs:\n{exc}")
+
+    def reconcile_csv_records(self) -> None:
+        user_name = self.db.get_setting("user_name").strip()
+        base_folder = self.db.get_setting("base_folder").strip()
+        if not user_name or not base_folder:
+            QMessageBox.warning(self, "Reconstruir CSVs", "Configure o usuário e a pasta-base antes de reconstruir.")
+            return
+        confirmed = 0
+        failed = 0
+        for item in self.db.list_task_records(user_name=user_name):
+            try:
+                append_record(base_folder, item["data"])
+                self.db.mark_task_synced(item["record_id"])
+                confirmed += 1
+                logging.info("Task %s confirmada no CSV durante reconciliação", item["record_id"])
+            except Exception as exc:
+                self.db.mark_task_error(item["record_id"], str(exc))
+                failed += 1
+                logging.warning("Task %s permanece no SQLite - falha na reconciliação: %s", item["record_id"], exc)
+        self.update_pending_status()
+        if failed:
+            QMessageBox.warning(self, "Reconstruir CSVs", f"{confirmed} task(s) confirmada(s); {failed} falharam.")
+        else:
+            QMessageBox.information(self, "Reconstruir CSVs", f"{confirmed} task(s) reconciliada(s) com os CSVs.")
 
     def _tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason in {

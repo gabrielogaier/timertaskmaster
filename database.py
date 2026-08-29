@@ -86,6 +86,20 @@ class Database:
                     last_attempt_at TEXT NOT NULL DEFAULT ''
                 );
 
+                CREATE TABLE IF NOT EXISTS task_records (
+                    record_id TEXT PRIMARY KEY,
+                    data_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    sync_status TEXT NOT NULL DEFAULT 'PENDENTE',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT NOT NULL DEFAULT '',
+                    last_attempt_at TEXT NOT NULL DEFAULT '',
+                    synced_at TEXT NOT NULL DEFAULT ''
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_task_records_sync_status
+                ON task_records(sync_status);
+
                 CREATE TABLE IF NOT EXISTS audit_actions (
                     action_id TEXT PRIMARY KEY,
                     record_id TEXT NOT NULL,
@@ -104,6 +118,7 @@ class Database:
                 """
             )
             self._migrate_pending_records(connection)
+            self._migrate_task_records(connection)
 
             now = self.now_text()
             project_count = connection.execute("SELECT COUNT(*) FROM projects").fetchone()[0]
@@ -146,6 +161,21 @@ class Database:
             UPDATE pending_records
             SET status = 'FALHA'
             WHERE TRIM(last_error) <> '' AND status = 'PENDENTE'
+            """
+        )
+
+    @staticmethod
+    def _migrate_task_records(connection: sqlite3.Connection) -> None:
+        """Cria a fonte permanente sem remover dados da fila legada."""
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO task_records(
+                record_id, data_json, created_at, sync_status, attempts,
+                last_error, last_attempt_at, synced_at
+            )
+            SELECT record_id, data_json, created_at, status, attempts,
+                   last_error, last_attempt_at, ''
+            FROM pending_records
             """
         )
 
@@ -254,14 +284,15 @@ class Database:
         with self.connect() as connection:
             connection.execute("DELETE FROM active_timer WHERE singleton_id = 1")
 
-    def add_pending_record(self, record: dict[str, Any]) -> None:
-        """Persiste localmente antes de qualquer tentativa de gravação no CSV."""
+    def add_task_record(self, record: dict[str, Any]) -> None:
+        """Persiste definitivamente uma task antes de qualquer acesso ao CSV."""
         with self.connect() as connection:
             connection.execute(
                 """
-                INSERT INTO pending_records(
-                    record_id, data_json, created_at, attempts, last_error, status, last_attempt_at
-                ) VALUES (?, ?, ?, 0, '', ?, '')
+                INSERT INTO task_records(
+                    record_id, data_json, created_at, sync_status, attempts,
+                    last_error, last_attempt_at, synced_at
+                ) VALUES (?, ?, ?, ?, 0, '', '', '')
                 ON CONFLICT(record_id) DO UPDATE SET
                     data_json = excluded.data_json
                 """,
@@ -273,59 +304,110 @@ class Database:
                 ),
             )
 
-    def list_pending_records(self) -> list[dict[str, Any]]:
+    def list_task_records(self, pending_only: bool = False, user_name: str | None = None,
+                          selected_date: datetime | None = None) -> list[dict[str, Any]]:
+        query = ("SELECT record_id, data_json, created_at, sync_status, attempts, last_error, "
+                 "last_attempt_at, synced_at FROM task_records")
+        clauses: list[str] = []
+        params: list[Any] = []
+        if pending_only:
+            clauses.append("sync_status <> ?")
+            params.append(SYNCED_STATUS)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY created_at, record_id"
         with self.connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT record_id, data_json, created_at, attempts, last_error, status, last_attempt_at
-                FROM pending_records
-                ORDER BY created_at, record_id
-                """
-            ).fetchall()
+            rows = connection.execute(query, params).fetchall()
         result: list[dict[str, Any]] = []
+        selected_prefix = selected_date.strftime("%Y-%m-%d") if selected_date else ""
         for row in rows:
+            data = json.loads(row["data_json"])
+            if user_name and str(data.get("usuario", "")) != user_name:
+                continue
+            if selected_prefix and not str(data.get("inicio", "")).startswith(selected_prefix):
+                continue
             result.append(
                 {
                     "record_id": row["record_id"],
-                    "data": json.loads(row["data_json"]),
+                    "data": data,
                     "created_at": row["created_at"],
                     "attempts": row["attempts"],
                     "last_error": row["last_error"],
-                    "status": row["status"],
+                    "status": row["sync_status"],
                     "last_attempt_at": row["last_attempt_at"],
                 }
             )
         return result
 
-    def mark_pending_error(self, record_id: str, error: str) -> None:
+    def mark_task_error(self, record_id: str, error: str) -> None:
         with self.connect() as connection:
             connection.execute(
                 """
-                UPDATE pending_records
+                UPDATE task_records
                 SET attempts = attempts + 1,
                     last_error = ?,
-                    status = ?,
+                    sync_status = ?,
                     last_attempt_at = ?
                 WHERE record_id = ?
                 """,
                 (error[:1000], FAILED_STATUS, self.now_text(), record_id),
             )
 
-    def remove_pending_record(self, record_id: str) -> None:
+    def mark_task_synced(self, record_id: str) -> None:
+        now = self.now_text()
         with self.connect() as connection:
-            connection.execute("DELETE FROM pending_records WHERE record_id = ?", (record_id,))
+            connection.execute("""
+                UPDATE task_records
+                SET sync_status = ?, last_error = '', last_attempt_at = ?, synced_at = ?
+                WHERE record_id = ?
+                """, (SYNCED_STATUS, now, now, record_id))
 
-    def pending_count(self) -> int:
+    def task_pending_count(self) -> int:
         with self.connect() as connection:
-            return int(connection.execute("SELECT COUNT(*) FROM pending_records").fetchone()[0])
+            return int(connection.execute("SELECT COUNT(*) FROM task_records WHERE sync_status <> ?", (SYNCED_STATUS,)).fetchone()[0])
 
-    def failed_count(self) -> int:
+    def task_failed_count(self) -> int:
         with self.connect() as connection:
             return int(
                 connection.execute(
-                    "SELECT COUNT(*) FROM pending_records WHERE status = ?", (FAILED_STATUS,)
+                    "SELECT COUNT(*) FROM task_records WHERE sync_status = ?", (FAILED_STATUS,)
                 ).fetchone()[0]
             )
+
+    def import_task_records(self, records: list[dict[str, Any]]) -> int:
+        imported = 0
+        now = self.now_text()
+        with self.connect() as connection:
+            for record in records:
+                record_id = str(record.get("registro_id", "")).strip()
+                if not record_id:
+                    continue
+                cursor = connection.execute("""
+                    INSERT INTO task_records(record_id, data_json, created_at, sync_status, attempts,
+                        last_error, last_attempt_at, synced_at)
+                    VALUES (?, ?, ?, ?, 0, '', ?, ?)
+                    ON CONFLICT(record_id) DO NOTHING
+                    """, (record_id, json.dumps(record, ensure_ascii=False), now, SYNCED_STATUS, now, now))
+                imported += cursor.rowcount
+        return imported
+
+    def add_pending_record(self, record: dict[str, Any]) -> None:
+        self.add_task_record(record)
+
+    def list_pending_records(self) -> list[dict[str, Any]]:
+        return self.list_task_records(pending_only=True)
+
+    def mark_pending_error(self, record_id: str, error: str) -> None:
+        self.mark_task_error(record_id, error)
+
+    def remove_pending_record(self, record_id: str) -> None:
+        self.mark_task_synced(record_id)
+
+    def pending_count(self) -> int:
+        return self.task_pending_count()
+
+    def failed_count(self) -> int:
+        return self.task_failed_count()
     def add_audit_action(self, action: dict[str, Any]) -> None:
         """Mantém a ação de exclusão localmente, inclusive após sincronizar."""
         with self.connect() as connection:
@@ -421,4 +503,3 @@ class Database:
                     (FAILED_STATUS,),
                 ).fetchone()[0]
             )
-

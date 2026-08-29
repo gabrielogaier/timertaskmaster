@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import logging
 import os
 import re
 import shutil
@@ -207,6 +208,8 @@ def append_record(base_folder: str, record: dict[str, Any]) -> Path:
             writer.writerow(record_to_write)
             csv_file.flush()
             os.fsync(csv_file.fileno())
+        if not file_exists:
+            logging.info("CSV mensal criado ou reconstruído: %s", file_path)
 
     return file_path
 
@@ -352,3 +355,16 @@ def read_records_for_date(
     rows.sort(key=lambda row: str(row.get("inicio", "")))
     actions = read_audit_actions_for_month(base_folder, user_name, selected_date)
     return apply_audit_actions(rows, actions)
+
+
+def read_all_records(base_folder: str, user_name: str) -> list[dict[str, str]]:
+    """Lê CSVs mensais para importação histórica; nunca altera os arquivos."""
+    if not base_folder.strip() or not user_name.strip():
+        return []
+    records_dir = Path(base_folder) / "registros" / safe_folder_name(user_name)
+    if not records_dir.is_dir():
+        return []
+    rows: list[dict[str, str]] = []
+    for file_path in sorted(records_dir.glob("????-??.csv")):
+        rows.extend(_read_dict_rows(file_path))
+    return rows

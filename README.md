@@ -2,7 +2,7 @@
 
 Timer Task Master reúne duas funções no mesmo aplicativo:
 
-1. **Timer Task pessoal**: timer, registro manual, histórico, projetos, tipos de atividade, SQLite local e envio seguro para CSV.
+1. **Timer Task pessoal**: timer, registro manual, histórico, projetos, tipos de atividade e SQLite local como fonte permanente; o CSV é uma cópia sincronizada para consulta.
 2. **Gestão**: dashboard diário, cadastro de usuários monitorados e leitura de várias pastas de registros.
 
 ## Atualização do Timer Task
@@ -13,7 +13,7 @@ O instalador do Master utiliza o mesmo identificador de aplicativo do Timer Task
 - o executável e os atalhos antigos são removidos;
 - os dados locais não são apagados;
 - o banco continua em `%LOCALAPPDATA%\TimerTask\timertask.db`;
-- projetos, tipos, configurações, timer ativo e tasks pendentes são preservados;
+- projetos, tipos, configurações, timer ativo e todo o histórico de tasks são preservados;
 - a pasta-base dos CSVs continua configurada;
 - antes da primeira abertura, é criado um backup em `%LOCALAPPDATA%\TimerTask\backups`;
 - novas tabelas de gestão são acrescentadas ao mesmo SQLite.
