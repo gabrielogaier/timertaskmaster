@@ -74,9 +74,7 @@ class UiSmokeTests(unittest.TestCase):
             timer_db = Database(db_path)
             timer_db.set_setting("user_name", "Usuário Teste")
             timer_db.set_setting("base_folder", str(csv_base))
-            append_record(
-                str(csv_base),
-                {
+            record = {
                     "registro_id": "today-total-ui-1",
                     "usuario": "Usuário Teste",
                     "origem_registro": "TIMER",
@@ -90,8 +88,10 @@ class UiSmokeTests(unittest.TestCase):
                     "observacao": "",
                     "computador": "PC",
                     "data_registro": f"{today_text} 08:01:30",
-                },
-            )
+            }
+            append_record(str(csv_base), record)
+            timer_db.add_task_record(record)
+            timer_db.mark_task_synced(record["registro_id"])
             master_db = MasterDatabase(db_path)
             window = MainWindow(timer_db, master_db)
             window.tabs.setCurrentWidget(window.dashboard_tab)
@@ -116,9 +116,7 @@ class UiSmokeTests(unittest.TestCase):
             timer_db = Database(db_path)
             timer_db.set_setting("user_name", "Usuário Teste")
             timer_db.set_setting("base_folder", str(csv_base))
-            append_record(
-                str(csv_base),
-                {
+            record = {
                     "registro_id": "history-details-1",
                     "usuario": "Usuário Teste",
                     "origem_registro": "MANUAL",
@@ -132,8 +130,10 @@ class UiSmokeTests(unittest.TestCase):
                     "observacao": "Observação completa do registro",
                     "computador": "PC-DETALHES",
                     "data_registro": "2026-08-03 09:15:01",
-                },
-            )
+            }
+            append_record(str(csv_base), record)
+            timer_db.add_task_record(record)
+            timer_db.mark_task_synced(record["registro_id"])
             master_db = MasterDatabase(db_path)
             window = MainWindow(timer_db, master_db)
             window.history_date.setDate(QDate(2026, 8, 3))
@@ -223,6 +223,10 @@ class UiSmokeTests(unittest.TestCase):
             }
             append_record(str(csv_base), record)
             append_audit_action(str(csv_base), action)
+            timer_db.add_task_record(record)
+            timer_db.mark_task_synced(record["registro_id"])
+            timer_db.add_audit_action(action)
+            timer_db.mark_audit_synced(action["acao_id"])
             master_db = MasterDatabase(db_path)
             window = MainWindow(timer_db, master_db)
             window.date_edit.setDate(QDate(2026, 7, 13))
@@ -269,6 +273,8 @@ class UiSmokeTests(unittest.TestCase):
                 "data_registro": "2026-07-13 14:00:00",
             }
             original_path = append_record(str(csv_base), record)
+            timer_db.add_task_record(record)
+            timer_db.mark_task_synced(record["registro_id"])
             master_db = MasterDatabase(db_path)
             window = MainWindow(timer_db, master_db)
             window.history_date.setDate(QDate(2026, 7, 13))
