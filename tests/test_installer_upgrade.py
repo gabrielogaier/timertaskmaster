@@ -20,6 +20,14 @@ class InstallerUpgradeTests(unittest.TestCase):
         self.assertIn("--collect-all PySide6", build_script)
         self.assertIn("--collect-all shiboken6", build_script)
 
+    def test_installer_and_executable_metadata_share_current_version(self):
+        root = Path(__file__).resolve().parents[1]
+        setup = (root / "installer" / "setup.iss").read_text(encoding="utf-8")
+        version_info = (root / "installer" / "version_info.txt").read_text(encoding="utf-8")
+        self.assertIn('#define MyAppVersion "2.1.1"', setup)
+        self.assertIn("filevers=(2, 1, 1, 0)", version_info)
+        self.assertIn("ProductVersion', u'2.1.1'", version_info)
+
 
 if __name__ == "__main__":
     unittest.main()
