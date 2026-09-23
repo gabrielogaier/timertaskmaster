@@ -14,6 +14,7 @@ from PySide6.QtCore import QDate, QDateTime, QLockFile, QTimer, Qt
 from PySide6.QtGui import QAction, QCloseEvent, QColor, QIcon
 from PySide6.QtWidgets import (
     QApplication,
+    QCompleter,
     QComboBox,
     QDateEdit,
     QDateTimeEdit,
@@ -39,6 +40,21 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+
+class CatalogComboBox(QComboBox):
+    """Campo de catálogo com busca incremental e criação por Enter."""
+
+    def __init__(self, table_name: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.table_name = table_name
+        self.setEditable(True)
+        self.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.lineEdit().setPlaceholderText("Digite para buscar ou criar")
+        completer = self.completer()
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
 
 from csv_store import (
     append_audit_action,
@@ -284,8 +300,10 @@ class MainWindow(QMainWindow):
 
         form_group = QGroupBox("Atividade")
         form = QFormLayout(form_group)
-        self.project_combo = QComboBox()
-        self.activity_combo = QComboBox()
+        self.project_combo = CatalogComboBox("projects")
+        self.activity_combo = CatalogComboBox("activity_types")
+        self.project_combo.lineEdit().returnPressed.connect(lambda: self.ensure_catalog_entry(self.project_combo))
+        self.activity_combo.lineEdit().returnPressed.connect(lambda: self.ensure_catalog_entry(self.activity_combo))
         self.description_edit = QLineEdit()
         self.description_edit.setPlaceholderText("Descrição breve do que será realizado")
         form.addRow("Projeto:", self.project_combo)
@@ -345,8 +363,10 @@ class MainWindow(QMainWindow):
 
         form_group = QGroupBox("Dados do registro manual")
         form = QFormLayout(form_group)
-        self.manual_project_combo = QComboBox()
-        self.manual_activity_combo = QComboBox()
+        self.manual_project_combo = CatalogComboBox("projects")
+        self.manual_activity_combo = CatalogComboBox("activity_types")
+        self.manual_project_combo.lineEdit().returnPressed.connect(lambda: self.ensure_catalog_entry(self.manual_project_combo))
+        self.manual_activity_combo.lineEdit().returnPressed.connect(lambda: self.ensure_catalog_entry(self.manual_activity_combo))
         self.manual_start_edit = QDateTimeEdit(QDateTime.currentDateTime().addSecs(-3600))
         self.manual_end_edit = QDateTimeEdit(QDateTime.currentDateTime())
         for editor in (self.manual_start_edit, self.manual_end_edit):
@@ -675,6 +695,28 @@ class MainWindow(QMainWindow):
         if index >= 0:
             combo.setCurrentIndex(index)
 
+    def ensure_catalog_entry(self, combo: CatalogComboBox) -> bool:
+        """Seleciona um item exato ou cria o texto digitado no catálogo."""
+        name = combo.currentText().strip()
+        if not name:
+            return False
+        exact_index = combo.findText(name, Qt.MatchFlag.MatchFixedString)
+        if exact_index >= 0:
+            combo.setCurrentIndex(exact_index)
+            return combo.currentData() is not None
+        try:
+            self.db.add_item(combo.table_name, name)
+        except Exception as exc:
+            label = "o projeto" if combo.table_name == "projects" else "o tipo de atividade"
+            QMessageBox.warning(self, "Cadastro", f"Não foi possível criar {label}:\n{exc}")
+            return False
+        self.reload_catalogs()
+        exact_index = combo.findText(name, Qt.MatchFlag.MatchFixedString)
+        if exact_index < 0:
+            return False
+        combo.setCurrentIndex(exact_index)
+        return combo.currentData() is not None
+
     @staticmethod
     def _fill_catalog_table(table: QTableWidget, rows: list) -> None:
         table.setRowCount(len(rows))
@@ -733,7 +775,7 @@ class MainWindow(QMainWindow):
         if self.db.get_active_timer():
             QMessageBox.warning(self, "Timer", "Já existe uma atividade em andamento.")
             return
-        if self.project_combo.currentData() is None or self.activity_combo.currentData() is None:
+        if not self.ensure_catalog_entry(self.project_combo) or not self.ensure_catalog_entry(self.activity_combo):
             QMessageBox.warning(self, "Timer", "Cadastre e selecione um projeto e um tipo de atividade.")
             return
         started_at = datetime.now().replace(microsecond=0).isoformat(sep=" ")
@@ -775,10 +817,7 @@ class MainWindow(QMainWindow):
             self.tabs.setCurrentWidget(self.settings_tab)
             return
 
-        if (
-            self.manual_project_combo.currentData() is None
-            or self.manual_activity_combo.currentData() is None
-        ):
+        if not self.ensure_catalog_entry(self.manual_project_combo) or not self.ensure_catalog_entry(self.manual_activity_combo):
             QMessageBox.warning(
                 self,
                 "Registro manual",

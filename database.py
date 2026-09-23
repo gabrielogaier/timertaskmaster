@@ -208,7 +208,7 @@ class Database:
         with self.connect() as connection:
             return list(connection.execute(query).fetchall())
 
-    def add_item(self, table: str, name: str) -> None:
+    def add_item(self, table: str, name: str) -> int:
         if table not in {"projects", "activity_types"}:
             raise ValueError("Tabela inválida")
         clean_name = name.strip()
@@ -216,10 +216,11 @@ class Database:
             raise ValueError("Informe um nome")
         now = self.now_text()
         with self.connect() as connection:
-            connection.execute(
+            cursor = connection.execute(
                 f"INSERT INTO {table}(name, active, created_at, updated_at) VALUES (?, 1, ?, ?)",
                 (clean_name, now, now),
             )
+            return int(cursor.lastrowid)
 
     def rename_item(self, table: str, item_id: int, name: str) -> None:
         if table not in {"projects", "activity_types"}:
