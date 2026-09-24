@@ -77,35 +77,54 @@ def _is_audit_file(path: Path) -> bool:
     return any(part.casefold() == "auditoria" for part in path.parts)
 
 
+def folder_is_available(folder: str) -> bool:
+    """Retorna se a pasta pode ser consultada, inclusive em compartilhamentos Windows."""
+    try:
+        return Path(folder).is_dir()
+    except OSError:
+        # Um UNC sem conexão ou sem credencial (por exemplo, WinError 1326)
+        # deve aparecer como indisponível, nunca impedir a abertura do programa.
+        return False
+
+
 def _candidate_csv_files(folder: str, selected_date: date | None = None) -> list[Path]:
     root = Path(folder)
-    if not root.exists() or not root.is_dir():
+    if not folder_is_available(folder):
         return []
     pattern = f"{selected_date:%Y-%m}.csv" if selected_date is not None else "*.csv"
-    return sorted(
-        path
-        for path in root.rglob(pattern)
-        if path.is_file() and not _is_audit_file(path)
-    )
+    try:
+        return sorted(
+            path
+            for path in root.rglob(pattern)
+            if path.is_file() and not _is_audit_file(path)
+        )
+    except OSError:
+        return []
 
 
 def _candidate_audit_files(folder: str, selected_date: date | None = None) -> list[Path]:
     root = Path(folder)
-    if not root.exists() or not root.is_dir():
+    if not folder_is_available(folder):
         return []
     pattern = f"{selected_date:%Y-%m}.csv" if selected_date is not None else "*.csv"
-    return sorted(
-        path
-        for path in root.rglob(pattern)
-        if path.is_file() and _is_audit_file(path)
-    )
+    try:
+        return sorted(
+            path
+            for path in root.rglob(pattern)
+            if path.is_file() and _is_audit_file(path)
+        )
+    except OSError:
+        return []
 
 
 def discover_users(folder: str) -> list[str]:
     """Detecta os nomes gravados na coluna usuario dos CSVs de tasks."""
     names: dict[str, str] = {}
     files = _candidate_csv_files(folder)
-    files = sorted(files, key=lambda item: item.stat().st_mtime, reverse=True)[:100]
+    try:
+        files = sorted(files, key=lambda item: item.stat().st_mtime, reverse=True)[:100]
+    except OSError:
+        return []
     for file_path in files:
         try:
             for row in _read_csv_rows(file_path):

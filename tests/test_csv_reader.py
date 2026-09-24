@@ -3,8 +3,9 @@ import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
-from csv_reader import discover_users, read_records, read_records_for_months
+from csv_reader import discover_users, folder_is_available, read_records, read_records_for_months
 
 
 FIELDS = [
@@ -15,6 +16,11 @@ FIELDS = [
 
 
 class CsvReaderTest(unittest.TestCase):
+    def test_inaccessible_network_folder_is_treated_as_unavailable(self):
+        with patch("csv_reader.Path.is_dir", side_effect=OSError(1326, "credencial inválida")):
+            self.assertFalse(folder_is_available(r"\\server\\share"))
+            self.assertEqual(discover_users(r"\\server\\share"), [])
+
     def _write(self, path: Path, rows: list[dict[str, str]], fields=FIELDS):
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", newline="", encoding="utf-8-sig") as handle:

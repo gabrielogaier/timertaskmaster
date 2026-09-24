@@ -64,6 +64,21 @@ class UiSmokeTests(unittest.TestCase):
         window.force_quit = True
         window.close()
 
+    def test_users_table_stays_open_when_network_folder_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            db_path = Path(temporary) / "timertask.db"
+            timer_db = Database(db_path)
+            master_db = MasterDatabase(db_path)
+            master_db.add_user("Gabriel", "Gabriel", r"\\server\\share")
+
+            with patch("app.folder_is_available", return_value=False):
+                window = MainWindow(timer_db, master_db)
+
+            self.assertEqual(window.users_table.item(0, 3).text(), "0")
+            self.assertEqual(window.users_table.item(0, 4).text(), "Pasta indisponível")
+            window.force_quit = True
+            window.close()
+
     def test_timer_tab_refreshes_total_for_current_date(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

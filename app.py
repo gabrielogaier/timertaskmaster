@@ -41,6 +41,7 @@ from csv_reader import (
     apply_audit_actions_to_records,
     count_csv_files,
     discover_users,
+    folder_is_available,
     format_duration,
     read_records,
     read_records_for_months,
@@ -613,9 +614,9 @@ class MainWindow(TimerMainWindow):
         self.users_table.setRowCount(len(users))
         for row, user in enumerate(users):
             folder = str(user["source_folder"])
-            path = Path(folder)
-            file_count = count_csv_files(folder) if path.is_dir() else 0
-            status = "OK" if path.is_dir() else "Pasta indisponível"
+            available = folder_is_available(folder)
+            file_count = count_csv_files(folder) if available else 0
+            status = "OK" if available else "Pasta indisponível"
             values = [
                 str(user["display_name"]),
                 folder,
