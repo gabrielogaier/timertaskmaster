@@ -791,20 +791,20 @@ class MainWindow(QMainWindow):
             logging.exception("Falha ao iniciar timer")
             QMessageBox.critical(self, "Timer", f"Não foi possível iniciar:\n{exc}")
 
-    def _persist_completed_record(self, record: dict) -> bool:
-        """Salva primeiro no SQLite e depois tenta registrar no CSV compartilhado."""
+    def _persist_completed_record(self, record: dict) -> None:
+        """Salva o registro localmente para sincronização posterior com o CSV.
+
+        O CSV fica em uma pasta que pode ser uma rede Windows. Qualquer acesso
+        a essa pasta neste thread pode bloquear a interface por vários minutos
+        quando a rede estiver indisponível. O SQLite local é a fonte imediata do
+        registro; o botão "Registrar Tasks" faz a sincronização quando o usuário
+        estiver conectado.
+        """
         self.db.add_task_record(record)
-        logging.info("Task %s salva no SQLite", record["registro_id"])
-        base_folder = self.db.get_setting("base_folder").strip()
-        try:
-            append_record(base_folder, record)
-            self.db.mark_task_synced(record["registro_id"])
-            logging.info("Task %s sincronizada com CSV", record["registro_id"])
-            return True
-        except Exception as exc:
-            self.db.mark_task_error(record["registro_id"], str(exc))
-            logging.warning("Task %s permanece no SQLite - falha ao acessar CSV: %s", record["registro_id"], exc)
-            return False
+        logging.info(
+            "Task %s salva no SQLite e aguardando sincronização com CSV",
+            record["registro_id"],
+        )
 
     def save_manual_record(self) -> None:
         user_name = self.db.get_setting("user_name").strip()
@@ -855,7 +855,7 @@ class MainWindow(QMainWindow):
         }
 
         try:
-            registered = self._persist_completed_record(record)
+            self._persist_completed_record(record)
         except Exception as exc:
             logging.exception("Falha ao salvar registro manual localmente")
             QMessageBox.critical(
@@ -874,19 +874,12 @@ class MainWindow(QMainWindow):
         self.refresh_history()
         self.update_pending_status()
 
-        if registered:
-            QMessageBox.information(
-                self,
-                "Registro manual",
-                "Registro manual salvo e identificado como MANUAL no CSV.",
-            )
-        else:
-            QMessageBox.warning(
-                self,
-                "Registro manual",
-                "O registro manual está seguro no SQLite, mas não foi gravado no CSV. "
-                "Use Registrar Tasks quando o acesso à pasta estiver normalizado.",
-            )
+        QMessageBox.information(
+            self,
+            "Registro manual",
+            "Registro manual salvo no banco local e pendente para o CSV. "
+            "Use Registrar Tasks quando estiver conectado à rede.",
+        )
 
     def finish_timer(self) -> None:
         timer = self.db.get_active_timer()
@@ -924,7 +917,7 @@ class MainWindow(QMainWindow):
         }
 
         try:
-            registered = self._persist_completed_record(record)
+            self._persist_completed_record(record)
         except Exception as exc:
             logging.exception("Falha ao salvar o registro localmente")
             QMessageBox.critical(
@@ -936,15 +929,11 @@ class MainWindow(QMainWindow):
             )
             return
 
-        if registered:
-            message = "Registro do timer salvo no CSV compartilhado."
-        else:
-            message = (
-                "A atividade foi concluída e está segura no banco local, mas não foi "
-                "registrada no CSV.\n\n"
-                "Ela ficará com status Falha. Use o botão Registrar Tasks quando o "
-                "acesso à pasta estiver normalizado."
-            )
+        message = (
+            "A atividade foi concluída e salva no banco local.\n\n"
+            "Ela ficou pendente para o CSV. Use o botão Registrar Tasks quando "
+            "estiver conectado à rede."
+        )
 
         self.db.clear_active_timer()
         self.description_edit.clear()
