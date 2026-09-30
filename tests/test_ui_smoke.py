@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 _TEST_LOCALAPPDATA = tempfile.mkdtemp(prefix="timertaskmaster-ui-")
 os.environ["LOCALAPPDATA"] = _TEST_LOCALAPPDATA
 
-from PySide6.QtCore import QDate
+from PySide6.QtCore import QDate, QThreadPool
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 import app as combined_app
@@ -219,16 +219,18 @@ class UiSmokeTests(unittest.TestCase):
                 "data_registro": "2026-08-03 09:00:00",
             }
 
-            with patch("timer_app.append_record") as append_record:
+            with patch("timer_app.append_record", side_effect=OSError("rede indisponível")) as append_record:
                 result = window._persist_completed_record(record)
+                self.assertIsNone(result)
+                self.assertTrue(QThreadPool.globalInstance().waitForDone(2000))
+                self.qt_app.processEvents()
+                append_record.assert_called_once()
 
-            self.assertIsNone(result)
-            append_record.assert_not_called()
             pending = db.list_task_records(pending_only=True)
             self.assertEqual(len(pending), 1)
             self.assertEqual(pending[0]["record_id"], "offline-save-1")
-            self.assertEqual(pending[0]["status"], "PENDENTE")
-            self.assertEqual(pending[0]["attempts"], 0)
+            self.assertEqual(pending[0]["status"], "FALHA")
+            self.assertEqual(pending[0]["attempts"], 1)
             window.force_quit = True
             window.close()
 

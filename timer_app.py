@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from PySide6.QtCore import QDate, QDateTime, QLockFile, QTimer, Qt
+from PySide6.QtCore import QDate, QDateTime, QLockFile, QObject, QRunnable, QThreadPool, QTimer, Qt, Signal
 from PySide6.QtGui import QAction, QCloseEvent, QColor, QIcon
 from PySide6.QtWidgets import (
     QApplication,
@@ -67,6 +67,28 @@ from database import Database
 
 
 APP_NAME = "Timer Task Master"
+
+
+class CsvSyncSignals(QObject):
+    finished = Signal(str, bool, str)
+
+
+class CsvSyncWorker(QRunnable):
+    """Grava um registro no CSV sem bloquear a interface."""
+
+    def __init__(self, base_folder: str, record: dict) -> None:
+        super().__init__()
+        self.base_folder = base_folder
+        self.record = record
+        self.signals = CsvSyncSignals()
+
+    def run(self) -> None:
+        record_id = str(self.record["registro_id"])
+        try:
+            append_record(self.base_folder, self.record)
+            self.signals.finished.emit(record_id, True, "")
+        except Exception as exc:
+            self.signals.finished.emit(record_id, False, str(exc))
 
 
 def application_dir() -> Path:
@@ -246,6 +268,8 @@ class MainWindow(QMainWindow):
     def __init__(self, db: Database) -> None:
         super().__init__()
         self.db = db
+        self._csv_sync_pool = QThreadPool.globalInstance()
+        self._csv_sync_workers: set[CsvSyncWorker] = set()
         self.force_quit = False
         self.setWindowTitle(APP_NAME)
         self.resize(820, 600)
@@ -792,19 +816,38 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Timer", f"Não foi possível iniciar:\n{exc}")
 
     def _persist_completed_record(self, record: dict) -> None:
-        """Salva o registro localmente para sincronização posterior com o CSV.
-
-        O CSV fica em uma pasta que pode ser uma rede Windows. Qualquer acesso
-        a essa pasta neste thread pode bloquear a interface por vários minutos
-        quando a rede estiver indisponível. O SQLite local é a fonte imediata do
-        registro; o botão "Registrar Tasks" faz a sincronização quando o usuário
-        estiver conectado.
-        """
+        """Salva localmente e tenta gravar no CSV em segundo plano."""
         self.db.add_task_record(record)
-        logging.info(
-            "Task %s salva no SQLite e aguardando sincronização com CSV",
-            record["registro_id"],
-        )
+        base_folder = self.db.get_setting("base_folder").strip()
+        if not base_folder:
+            logging.info("Task %s salva no SQLite; pasta CSV não configurada", record["registro_id"])
+            return
+
+        worker = CsvSyncWorker(base_folder, record)
+        worker.signals.finished.connect(self._on_csv_sync_finished)
+        self._csv_sync_workers.add(worker)
+        self._csv_sync_pool.start(worker)
+
+    def _on_csv_sync_finished(self, record_id: str, succeeded: bool, error: str) -> None:
+        self._csv_sync_workers = {
+            worker for worker in self._csv_sync_workers
+            if str(worker.record.get("registro_id")) != record_id
+        }
+        if succeeded:
+            self.db.mark_task_synced(record_id)
+            logging.info("Task %s sincronizada com CSV", record_id)
+        else:
+            self.db.mark_task_error(record_id, error)
+            logging.warning("Task %s permanece no SQLite - falha ao acessar CSV: %s", record_id, error)
+            self.tray.showMessage(
+                APP_NAME,
+                "Um registro ficou pendente porque não foi possível gravá-lo no CSV. "
+                "Use Registrar Tasks para tentar novamente.",
+                QSystemTrayIcon.MessageIcon.Warning,
+                6000,
+            )
+        self.update_pending_status()
+        self.refresh_history()
 
     def save_manual_record(self) -> None:
         user_name = self.db.get_setting("user_name").strip()
@@ -877,8 +920,8 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "Registro manual",
-            "Registro manual salvo no banco local e pendente para o CSV. "
-            "Use Registrar Tasks quando estiver conectado à rede.",
+            "Registro manual salvo no banco local. A gravação no CSV compartilhado "
+            "está sendo tentada em segundo plano; se falhar, use Registrar Tasks.",
         )
 
     def finish_timer(self) -> None:
@@ -931,8 +974,8 @@ class MainWindow(QMainWindow):
 
         message = (
             "A atividade foi concluída e salva no banco local.\n\n"
-            "Ela ficou pendente para o CSV. Use o botão Registrar Tasks quando "
-            "estiver conectado à rede."
+            "A gravação no CSV compartilhado está sendo tentada em segundo plano. "
+            "Se falhar, use Registrar Tasks."
         )
 
         self.db.clear_active_timer()
