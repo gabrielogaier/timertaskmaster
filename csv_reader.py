@@ -1,39 +1,12 @@
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Iterable
 
-
-@dataclass(frozen=True)
-class CsvRecord:
-    record_id: str
-    user: str
-    origin: str
-    project: str
-    activity_type: str
-    description: str
-    start: datetime
-    end: datetime
-    duration_seconds: int
-    observation: str
-    computer: str
-    registered_at: str
-    source_file: str
-    deleted: bool = False
-    deletion_reason: str = ""
-    deleted_at: str = ""
-    deleted_by: str = ""
-    audit_action_id: str = ""
-
-
-def format_duration(seconds: int) -> str:
-    seconds = max(0, int(seconds))
-    hours, remainder = divmod(seconds, 3600)
-    minutes, secs = divmod(remainder, 60)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+from dashboard_data import CsvRecord, format_duration
 
 
 def _read_csv_rows(file_path: Path) -> Iterable[dict[str, str]]:

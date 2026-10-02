@@ -1102,6 +1102,8 @@ class MainWindow(QMainWindow):
                 f"Total registrado hoje: {format_duration(valid_total_seconds)}"
             )
         self.update_pending_status()
+        if hasattr(self, "dashboard_tree"):
+            self.refresh_local_dashboard()
 
     def show_history_details(self, row_index: int, _column_index: int = 0) -> None:
         if row_index < 0 or row_index >= len(self.history_rows):

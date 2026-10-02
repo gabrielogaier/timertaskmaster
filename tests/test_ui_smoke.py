@@ -24,6 +24,64 @@ class UiSmokeTests(unittest.TestCase):
     def setUpClass(cls):
         cls.qt_app = QApplication.instance() or QApplication([])
 
+    def test_dashboard_combines_local_owner_and_monitored_csv_without_duplicates(self):
+        from test_dashboard_data import record
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            db = Database(root / "test.db")
+            db.set_setting("user_name", "Ana")
+            db.set_setting("base_folder", str(root / "csv"))
+            db.add_task_record(record())
+            append_record(str(root / "csv"), record())
+            append_record(str(root / "csv"), record("Bruno", "monitored"))
+            master_db = MasterDatabase(db.db_path)
+            master_db.add_user("Bruno", "Bruno", str(root / "csv"))
+            window = MainWindow(db, master_db)
+            window.date_edit.setDate(QDate(2026, 10, 2))
+            self.assertEqual(window.dashboard_tree.topLevelItemCount(), 2)
+            self.assertEqual(window.total_hours_label.text(), "02:00:00")
+            self.assertEqual(len(window._dashboard_export_entries()), 2)
+            entries, errors = window._period_export_entries(2026, [10], {})
+            self.assertEqual(len(entries), 2)
+            self.assertEqual(errors, [])
+            window.force_quit = True
+            window.close()
+
+    def test_dashboard_uses_own_local_records_offline_and_refreshes(self):
+        from app import MainWindow
+        from database import Database
+        from test_dashboard_data import record
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            db = Database(root / "timertask.db")
+            db.set_setting("user_name", "Ana")
+            db.add_task_record(record())
+            db.add_task_record(record("Bruno", "private-other"))
+            master_db = MasterDatabase(db.db_path)
+            master_db.add_user("Ana", "Ana", str(root / "offline"))
+            master_db.set_user_active(master_db.list_users()[0]["id"], False)
+            window = MainWindow(db, master_db)
+            window.date_edit.setDate(QDate(2026, 10, 2))
+            self.assertEqual(window.dashboard_tree.topLevelItemCount(), 1)
+            self.assertEqual(window.dashboard_tree.topLevelItem(0).text(0), "Ana")
+            self.assertEqual(window.total_hours_label.text(), "01:00:00")
+            self.assertEqual(window.manual_label.text(), "1")
+            window.project_filter.setCurrentText("Projeto A")
+            window.origin_filter.setCurrentText("TIMER")
+            self.assertEqual(window.records_label.text(), "0")
+            window.origin_filter.setCurrentText("Todos")
+            db.add_task_record(record(record_id="second"))
+            window.history_date.setDate(QDate(2026, 10, 2))
+            with patch("app.read_records", side_effect=AssertionError("Consulta de rede no registro pessoal")) as network_read:
+                window.refresh_history()
+            network_read.assert_not_called()
+            self.assertEqual(window.records_label.text(), "2")
+            self.assertEqual(window.project_filter.currentText(), "Projeto A")
+            window.force_quit = True
+            window.close()
+
     def test_export_options_dialog_opens_without_checkbox_wordwrap_error(self):
         dialog = ExportOptionsDialog(
             None,
@@ -404,6 +462,8 @@ class UiSmokeTests(unittest.TestCase):
                     "data_registro": "2026-07-13 10:30:00",
                 },
             )
+            from csv_store import read_all_records
+            timer_db.import_task_records(read_all_records(str(csv_base), "Usuário Teste"))
             master_db = MasterDatabase(db_path)
             window = MainWindow(timer_db, master_db)
             self.assertEqual(window.export_button.text(), "Exportar")
@@ -473,6 +533,8 @@ class UiSmokeTests(unittest.TestCase):
                         "data_registro": f"2026-{month:02d}-13 09:00:00",
                     },
                 )
+            from csv_store import read_all_records
+            timer_db.import_task_records(read_all_records(str(csv_base), "Usuário Teste"))
             master_db = MasterDatabase(db_path)
             window = MainWindow(timer_db, master_db)
 

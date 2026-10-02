@@ -22,6 +22,9 @@ Os CSVs já registrados também não são modificados pelo módulo de gestão. O
 
 ## Dashboard
 
+O usuário configurado aparece automaticamente, mesmo sem uma pasta compartilhada disponível. Seus registros são consultados no SQLite local, incluindo pendências e auditoria; os demais usuários ativos continuam sendo lidos dos CSVs monitorados. O próprio usuário aparece uma única vez e também entra nas exportações diárias e mensais a partir do banco local.
+
+
 Na aba **Usuários monitorados**, adicione uma pasta para cada usuário. O nome é detectado pela coluna `usuario` dos CSVs.
 
 O dashboard mostra:
